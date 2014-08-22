@@ -1,0 +1,13 @@
+gui/*.py[cod]
+gui/*.so
+gui/*.egg
+gui/*.egg-info
+gui/dist
+gui/build
+gui/*UI.py
+gui/xres.py
+gui/*_pb2.py
+jni/*.pb.cc
+jni/*.pb.h
+libs/
+obj/

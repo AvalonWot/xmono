@@ -1,0 +1,1 @@
+python py2exe_xmono.py py2exe

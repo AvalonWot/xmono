@@ -7,6 +7,7 @@ gui/build
 gui/*UI.py
 gui/xres.py
 gui/*_pb2.py
+gui/const_cmdid.py
 jni/*.pb.cc
 jni/*.pb.h
 libs/

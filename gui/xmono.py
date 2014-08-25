@@ -224,28 +224,36 @@ class XMonoWindow(QtGui.QMainWindow):
     def _traceCntShow(self, d):
         self._clearFuncCntTableWidget()
         w = self.ui.funcCntTableWidget
-        w.setColumnCount(2)
+        w.setColumnCount(3)
         labels = QtCore.QStringList()
+        labels.append("")
         labels.append("function")
         labels.append("count")
         w.setHorizontalHeaderLabels(labels)
-        w.horizontalHeader().setResizeMode(0, QtGui.QHeaderView.Stretch)
+        w.horizontalHeader().setResizeMode(1, QtGui.QHeaderView.Stretch)
+        w.horizontalHeader().setResizeMode(0, QtGui.QHeaderView.ResizeToContents)
         w.verticalHeader().setResizeMode(QtGui.QHeaderView.ResizeToContents)
         w.horizontalHeader().show()
         w.verticalHeader().hide()
         for k in d.keys():
             row = w.rowCount()
             w.insertRow(row)
-            w.setItem(row, 0, QtGui.QTableWidgetItem(k))
+            #设置序数
             v = QtGui.QTableWidgetItem()
-            v.setData(0, d[k])
-            w.setItem(row, 1, v)
-        w.sortItems(1, QtCore.Qt.AscendingOrder)
+            v.setData(0, d[k][1])
+            w.setItem(row, 0, v)
+            #设置函数名
+            w.setItem(row, 1, QtGui.QTableWidgetItem(k))
+            #设置调用次数
+            v = QtGui.QTableWidgetItem()
+            v.setData(0, d[k][0])  #这里用setData是为了方便排序
+            w.setItem(row, 2, v)
+        w.sortItems(0, QtCore.Qt.AscendingOrder)
 
     def _traceCntHandle(self, l):
         for i in l:
             item = i.split('|')
-            self._traceFuncCntDict[item[0]] = int(item[1])
+            self._traceFuncCntDict[item[0]] = (int(item[1]), int(item[2]))
         self._funcTraceCntFilteShow()
 
     def _recvFuncTrace(self, packet):

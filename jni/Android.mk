@@ -13,10 +13,16 @@ LOCAL_SRC_FILES	:= ecmd.c
 LOCAL_ARM_MODE	:= arm
 include $(BUILD_STATIC_LIBRARY)
 
-#########ecmd#########
+#########protobuf-lite#########
 include $(CLEAR_VARS)
 LOCAL_MODULE	:= protobuf-lite
 LOCAL_SRC_FILES := $(LOCAL_PATH)/lib/libprotobuf-lite.a
+include $(PREBUILT_STATIC_LIBRARY)
+
+#########lua#########
+include $(CLEAR_VARS)
+LOCAL_MODULE	:= lua
+LOCAL_SRC_FILES := $(LOCAL_PATH)/lib/liblua.a
 include $(PREBUILT_STATIC_LIBRARY)
 
 ######xmono######

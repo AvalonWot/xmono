@@ -309,17 +309,23 @@ static char const *disil_method (MonoMethod *method) {
     return mono_disasm_code (0, method, code, code + len);
 }
 
-static void send_trace_log (std::map<MonoMethod*, int> const &dict) {
+struct CallInfo{
+    CallInfo () : order(0), times(0){}
+    uint32_t order;
+    uint32_t times;
+};
+
+static void send_trace_log (std::map<MonoMethod*, CallInfo> const &dict) {
     MemWriter sbuf(0x100000);
     MemWriter writer(0x100000);
-    std::map<MonoMethod*, int>::const_iterator p;
+    std::map<MonoMethod*, CallInfo>::const_iterator p;
     for (p = dict.begin (); p != dict.end (); p++) {
         MonoMethod *method = p->first;
-        int count = p->second;
+        CallInfo call_info = p->second;
         char const *m = get_method_image_name (method);
         char *n = mono_method_full_name (method, 0);
         char str[256];
-        sbuf.sprintf ("[%s] %s [%08X]|%d\n", m, n, mono_method_get_token (method), count);
+        sbuf.sprintf ("[%s] %s [%08X]|%d|%d\n", m, n, mono_method_get_token (method), call_info.times, call_info.order);
         g_free (n);
     }
     if (!compress_data (sbuf.getBuffPtr (), sbuf.getBuffSize (), &writer)) {
@@ -338,8 +344,10 @@ static void send_trace_log (std::map<MonoMethod*, int> const &dict) {
 pthread_mutex_t trace_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void func_trace (MonoMethod *method) {
     pthread_mutex_lock (&trace_list_mutex);
-    static std::map<MonoMethod*, int>trace_log;
+    static std::map<MonoMethod*, CallInfo>trace_log;
+    static uint32_t order = 0;
     if (trace_switch == false) {
+        order = 0;
         if (!trace_log.empty ()) {
             send_trace_log (trace_log);
             trace_log.clear ();
@@ -347,10 +355,13 @@ static void func_trace (MonoMethod *method) {
         pthread_mutex_unlock (&trace_list_mutex);
         return; /*Fixme : 这个地方再考虑, 重复代码*/
     }
-    if (trace_log.find (method) != trace_log.end ())
-        trace_log[method] += 1;
-    else
-        trace_log[method] = 1;
+    if (trace_log.find (method) != trace_log.end ()) {
+        trace_log[method].times += 1;
+    } else {
+        trace_log[method] = CallInfo ();
+        trace_log[method].order = order++;
+        trace_log[method].times = 1;
+    }
     pthread_mutex_unlock (&trace_list_mutex);
     return;
 }

@@ -30,10 +30,10 @@ include $(PREBUILT_STATIC_LIBRARY)
 include $(CLEAR_VARS)
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
 LOCAL_SHARED_LIBRARIES := mono
-LOCAL_STATIC_LIBRARIES := ecmd protobuf-lite
+LOCAL_STATIC_LIBRARIES := ecmd protobuf-lite lua
 LOCAL_LDLIBS	+=	-L$(SYSROOT)/usr/lib -llog -lz
 LOCAL_MODULE	:= xmono
-LOCAL_SRC_FILES	:= xmono.cpp hook.cpp dis-cil.cpp helper.cpp xmono.pb.cc
+LOCAL_SRC_FILES	:= xmono.cpp hook.cpp dis-cil.cpp helper.cpp xmono.pb.cc lua-mono.cpp
 LOCAL_ARM_MODE	:= arm
 include $(BUILD_SHARED_LIBRARY)
 

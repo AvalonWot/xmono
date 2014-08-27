@@ -5,7 +5,7 @@ description: 辅助函数接口
 */
 #ifndef HELPER_H
 #define HELPER_H
-
+#include <stdarg.h>
 class MemWriter;
 
 void cache_flush(uint32_t begin, uint32_t end);
@@ -28,8 +28,10 @@ public:
     inline size_t getBuffSize () {
         return this->len;
     }
+    void clear ();
     void write (uint8_t const *data, size_t len);
     bool sprintf (char const *fmt, ...);
+    bool vsprintf (char const *fmt, va_list arg);
 private:
     void checkSize (size_t len);
     uint8_t *buf;

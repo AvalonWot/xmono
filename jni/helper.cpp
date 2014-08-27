@@ -82,6 +82,10 @@ void MemWriter::checkSize (size_t len) {
     }
 }
 
+void MemWriter::clear () {
+    this->len = 0;
+}
+
 void MemWriter::write (uint8_t const *data, size_t len) {
     checkSize (len);
     memcpy (&this->buf[this->len], data, len);
@@ -89,17 +93,20 @@ void MemWriter::write (uint8_t const *data, size_t len) {
 }
 
 bool MemWriter::sprintf (char const *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf (0, 0, fmt, ap) + 1;
-    if (n < 0) {
-        va_end(ap);
+    va_list args;
+    va_start(args, fmt);
+    bool res = this->vsprintf (fmt, args);
+    va_end(args);
+    return res;
+}
+
+bool MemWriter::vsprintf (char const *fmt, va_list args) {
+    int n = vsnprintf (0, 0, fmt, args) + 1;
+    if (n < 0)
         return false;
-    }
     checkSize (n);
-    n = vsnprintf ((char*)&this->buf[this->len], n, fmt, ap);
-    LOGD ("sprintf : len %d,  %s", n, (char*)&this->buf[this->len]);
-    va_end(ap);
+    n = vsnprintf ((char*)&this->buf[this->len], n, fmt, args);
+    //LOGD ("sprintf : len %d,  %s", n, (char*)&this->buf[this->len]);
     this->len += n;
     return true;
 }

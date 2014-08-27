@@ -385,7 +385,7 @@ static void set_stack_trace (Package *pkg) {
         MonoMethod *method = get_method_with_token(req.image_name ().c_str (), req.method_token ());
         if (!method) {
             rsp.set_err (false);
-            rsp.set_err_str (mono_helper_last_err ());
+            rsp.set_err_str (helper_last_err ());
             break;
         }
         pthread_mutex_lock (&hooked_mutex);
@@ -426,7 +426,7 @@ static void replace_method (Package *pkg) {
     MonoMethod * method = get_method_with_token (req.image_name ().c_str (), req.method_token ());
     if (!method) {
         rsp.set_err (false);
-        rsp.set_msg (mono_helper_last_err ());
+        rsp.set_msg (helper_last_err ());
         goto replace_method_end;
     }
     domain = mono_domain_get_by_id (req.domain_id ());
@@ -492,7 +492,7 @@ static void disasm_method (Package *pkg) {
     }
     std::string err("");
     MonoMethod *method = get_method_with_token (req.image_name ().c_str (), req.method_token ());
-    if (!method) err += mono_helper_last_err ();
+    if (!method) err += helper_last_err ();
     MonoImage *image = mono_image_loaded (req.image_name ().c_str ());
     if (!image) err += "  image : " + req.image_name () + " can not be find!";
     if (image && method) {

@@ -41,7 +41,7 @@ static int set_helper_err (char const *fmt, ...) {
     return 0;
 }
 
-char const *mono_helper_last_err () {
+char const *helper_last_err () {
     MemWriter *writer;
     (void) pthread_once (&helper_err_key_once, make_key);
     if ((writer = (MemWriter*)pthread_getspecific (helper_err_key)) == 0) {
@@ -107,6 +107,23 @@ void print_class_all_methods (MonoClass *clz) {
         LOGD ("%s", name);
         g_free (name);
     }
+}
+
+MonoClass *get_class_with_name (char const *image_name, char const *name_space, char const *class_name) {
+    MonoClass *clazz = get_base_class (class_name);
+    if (clazz)
+        return clazz;
+    MonoImage *image = mono_image_loaded (image_name);
+    if (!image) {
+        set_helper_err ("image : %s, can not find.", image_name);
+        return 0;
+    }
+    clazz = mono_class_from_name (image, name_space, class_name);
+    if (!clazz) {
+        set_helper_err ("class : %s, can not find.", class_name);
+        return 0;
+    }
+    return clazz;
 }
 
 MonoMethod *get_class_method (MonoClass *clz, char const *full_name) {

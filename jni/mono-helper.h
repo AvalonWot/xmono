@@ -3,6 +3,7 @@ file: mono-helper.h
 author: skeu
 description: 对monoAPI的一层包装模块接口
 */
+#include <stdint.h>
 #include "mono/metadata/assembly.h"
 #include "mono/metadata/class.h"
 #include "mono/metadata/image.h"
@@ -32,6 +33,8 @@ void print_class_all_methods (MonoClass *clz);
 
 MonoClass *get_base_class (char const *name);
 
+MonoClass *get_class_with_name (char const *image_name, char const *name_space, char const *class_name);
+
 MonoMethod *get_class_method (MonoClass *clz, char const *full_name);
 
 bool get_obj_field_value (MonoObject *obj, const char *key, void *value);
@@ -46,4 +49,4 @@ char const *get_method_namespace_name (MonoMethod *method);
 
 MonoMethod *get_method_with_token (char const *image_name, uint32_t token);
 
-char const *mono_helper_last_err ();
+char const *helper_last_err ();

@@ -126,17 +126,20 @@ MonoClass *get_class_with_name (char const *image_name, char const *name_space, 
     return clazz;
 }
 
-MonoMethod *get_class_method (MonoClass *clz, char const *full_name) {
-    void *it = 0;
-    MonoMethod *m;
-    while (m = mono_class_get_methods (clz, &it)) {
-        char *name = mono_method_full_name (m, 1);
-        if (strcmp (full_name, name) == 0) {
-            g_free (name);
-            return m;
-        }
-        g_free (name);
+MonoMethod *get_class_method (MonoClass *clz, char const *method_sig) {
+    MonoMethodDesc *mdesc = mono_method_desc_new (method_sig, 0);
+    if (!mdesc) {
+        LOGE ("mono_method_desc_new err\n");
+        return 0;
     }
+    LOGD ("mono_method_desc_new be called!");
+    MonoMethod *method = mono_method_desc_search_in_class (mdesc, clz);
+    if (!method) {
+        LOGE ("can not find method : %s\n", method_sig);
+        return 0;
+    }
+    LOGD ("mono_method_desc_search_in_class be called!");
+    return method;
 }
 
 bool get_obj_field_value (MonoObject *obj, const char *key, void *value) {

@@ -19,7 +19,10 @@ description: mono API 到 lua包装的C++层函数实现
 #include "mono/metadata/debug-helpers.h"
 #include "mono-helper.h"
 
-
+#include <android/log.h>
+#define LOG_TAG "XMONODEBUG"
+#define LOGD(fmt, args...)  __android_log_print(ANDROID_LOG_DEBUG,LOG_TAG, fmt, ##args)
+#define LOGE(fmt, args...)  __android_log_print(ANDROID_LOG_ERROR,LOG_TAG, fmt, ##args)
 /*
  * 将由lua传入的参数表转化为void *[]参数表
  * L : 含有参数表的lua_State
@@ -39,7 +42,9 @@ static void *call_method (lua_State *L, int base, MonoObject *thiz, MonoMethod *
         luaL_error (L, "%s need %d arguments, but get %d.", 
             mono_method_full_name (method, 1), n, cur_n);
     }
-    void **args = new void*[n];
+    void **args = 0;
+    if (n > 0)
+        args = new void*[n];
     void *iter = 0;
     MonoType *param_type;
     for (int i = 0; (param_type = mono_signature_get_params (sig, &iter)) != 0; i++) {
@@ -161,6 +166,7 @@ static void *call_method (lua_State *L, int base, MonoObject *thiz, MonoMethod *
     if (ex)
         luaL_error (L, "An exception was thrown in method.");
     //MonoType *ret_type = mono_signature_get_return_type (sig);
+    LOGD ("call_method be called!");
     return ret;
 }
 

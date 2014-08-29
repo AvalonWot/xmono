@@ -545,6 +545,7 @@ static void lua_code_exec (Package *pkg) {
     static lua_State *L = 0;
     xmono::LuaExecRsp rsp;
     xmono::LuaExecReq req;
+    MonoThread *thread = mono_thread_attach (mono_domain_get_by_id (0));
     do {
         if (L == 0 && !(L = lua_env_new ())) {
             rsp.set_level (xmono::LuaExecRsp::err);
@@ -564,6 +565,7 @@ static void lua_code_exec (Package *pkg) {
         rsp.set_level (xmono::LuaExecRsp::debug);
         rsp.set_message ("exec the lua string ok.");
     } while (0);
+    mono_thread_detach (thread);
     std::string out;
     rsp.SerializeToString (&out);
     ecmd_send (XMONO_ID_LUA_EXEC_RSP, (uint8_t const*)out.c_str (), out.size ());

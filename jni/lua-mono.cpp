@@ -176,8 +176,7 @@ static int l_get_class (lua_State *L) {
     MonoClass *clazz = get_class_with_name (image_name, np, name);
     if (!clazz)
         luaL_error (L, "%s", helper_last_err ());
-    void *u_clazz = lua_newuserdata (L, sizeof (MonoClass*));
-    memcpy (u_clazz, clazz, sizeof (MonoClass*));
+    lua_pushlightuserdata (L, clazz);
     return 1;
 }
 

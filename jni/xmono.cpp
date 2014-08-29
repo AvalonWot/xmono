@@ -21,10 +21,12 @@ description: hook com.tencent.Alice的数据加密点, 以获取明文数据
 #include "mono/metadata/mono-debug.h"
 #include "mono/metadata/debug-helpers.h"
 #include "mono/metadata/profiler.h"
+#include "lua/lua.hpp"
 #include "dis-cil.h"
 #include "hook.h"
 #include "helper.h"
 #include "mono-helper.h"
+#include "lua-mono.h"
 #include "ecmd.h"
 #include "xmono.pb.h"
 
@@ -33,7 +35,7 @@ description: hook com.tencent.Alice的数据加密点, 以获取明文数据
 #define LOGE(fmt, args...)  __android_log_print(ANDROID_LOG_ERROR,LOG_TAG, fmt, ##args)
 
 /*前置函数声明*/
-lua_State *lua_env_new ();
+static lua_State *lua_env_new ();
 
 #define CMDID(a,b,c) a = c,
 enum CmdId {
@@ -539,6 +541,35 @@ static void ecmd_err_callback () {
     exit (1);
 }
 
+static void lua_code_exec (Package *pkg) {
+    static lua_State *L = 0;
+    xmono::LuaExecRsp rsp;
+    xmono::LuaExecReq req;
+    do {
+        if (L == 0 && !(L = lua_env_new ())) {
+            rsp.set_level (xmono::LuaExecRsp::err);
+            rsp.set_message ("create a lua_State err.");
+            break;
+        }
+        std::string str((char*)pkg->body, pkg->all_len - sizeof (Package)); //Fixme : 修复头部all_len是总长的问题
+        if (!req.ParseFromString (str)) {
+            LOGD ("xmono::LuaExecReq ParseFromString err!");
+            return;
+        }
+        if (luaL_dostring (L, req.lua_code ().c_str ())) {
+            rsp.set_level (xmono::LuaExecRsp::err);
+            rsp.set_message (lua_tostring (L, -1));
+            break;
+        }
+        rsp.set_level (xmono::LuaExecRsp::debug);
+        rsp.set_message ("exec the lua string ok.");
+    } while (0);
+    std::string out;
+    rsp.SerializeToString (&out);
+    ecmd_send (XMONO_ID_LUA_EXEC_RSP, (uint8_t const*)out.c_str (), out.size ());
+    return;
+}
+
 static void init_network () {
     if (!ecmd_init (ecmd_err_callback)) {
         LOGD ("ecmd_init err : %s", ecmd_err_str ());
@@ -555,6 +586,7 @@ static void init_network () {
     ecmd_register_resp (XMONO_ID_LIST_DOMAIN_REP, list_assemblys);
     ecmd_register_resp (XMONO_ID_STACK_TRACE_REP, set_stack_trace);
     ecmd_register_resp (XMONO_ID_UNSTACK_TRACE_REP, unset_stack_trace);
+    ecmd_register_resp (XMONO_ID_LUA_EXEC_REP, lua_code_exec);
     LOGD ("ecmd init over.");
 }
 

@@ -155,6 +155,7 @@ class XMonoWindow(QtGui.QMainWindow):
         self._ecmd.registerResp(XMONO_ID_LIST_DOMAIN_RSP, self._recvListDomain)
         self._ecmd.registerResp(XMONO_ID_STACK_TRACE_RSP, self._recvStackTrace)
         self._ecmd.registerResp(XMONO_ID_REPLACE_METHOD_RSP, self._recvReplaceMethodRsp)
+        self._ecmd.registerResp(XMONO_ID_LUA_EXEC_RSP, self._recvExecLua)
 
     def _ecmdConnected(self):
         self.log.i(u"连接建立")
@@ -340,6 +341,12 @@ class XMonoWindow(QtGui.QMainWindow):
         self._traceMethod(s, True)
         self.stackTraceWindow.addMethod(s)
 
+    def _execLuaCode(self, code):
+        req = xmono_pb2.LuaExecReq()
+        req.lua_code = code
+        pkg = ecmd.EcmdPacket(XMONO_ID_LUA_EXEC_REP, req.SerializeToString())
+        self._ecmd.sendPacket(pkg)
+
     def _recvDisasmMethod(self, packet):
         rsp = xmono_pb2.DisasmMethodRsp()
         rsp.ParseFromString(packet.data)
@@ -374,6 +381,21 @@ class XMonoWindow(QtGui.QMainWindow):
             return
         l = rsp.stack.split("\n")[:-1]
         self.stackTraceWindow.addTraceResult(l)
+
+    def _recvExecLua(self, packet):
+        rsp = xmono_pb2.LuaExecRsp()
+        rsp.ParseFromString(packet.data)
+        level = xmono_pb2.LuaExecRsp.LogLevel
+        if rsp.level == level.Value('err'):
+            self.log.e (rsp.message)
+        elif rsp.level == level.Value('info'):
+            self.log.i (rsp.message)
+        elif rsp.level == level.Value('warring'):
+            self.log.w (rsp.message)
+        elif rsp.level == level.Value('debug'):
+            self.log.d (rsp.message)
+        else:
+            self.log.e (u"Lua执行回包中出现未知的level")
 
     def _print2Log(self, msg, level):
         """level WARNING INFO DEBUG ERROR"""

@@ -32,6 +32,9 @@ description: hook com.tencent.Alice的数据加密点, 以获取明文数据
 #define LOGD(fmt, args...)  __android_log_print(ANDROID_LOG_DEBUG,LOG_TAG, fmt, ##args)
 #define LOGE(fmt, args...)  __android_log_print(ANDROID_LOG_ERROR,LOG_TAG, fmt, ##args)
 
+/*前置函数声明*/
+lua_State *lua_env_new ();
+
 #define CMDID(a,b,c) a = c,
 enum CmdId {
     #include "const_cmdid.def"
@@ -553,6 +556,22 @@ static void init_network () {
     ecmd_register_resp (XMONO_ID_STACK_TRACE_REP, set_stack_trace);
     ecmd_register_resp (XMONO_ID_UNSTACK_TRACE_REP, unset_stack_trace);
     LOGD ("ecmd init over.");
+}
+
+static lua_State *lua_env_new () {
+    lua_State *L = luaL_newstate ();
+    luaL_openlibs (L);
+    char const *rpath_code = "package.cpath = package.cpath .. '/data/local/tmp/xmono/lualibs/lib?.so'\n"
+                             "package.path = package.path .. '/data/local/tmp/xmono/lualibs/?.lua'\n";
+    if (luaL_dostring (L, rpath_code)) {
+        char const *err = lua_tostring (L, -1);
+        LOGE ("%s", err);
+        lua_close (L);
+        return 0;
+    }
+    luaL_requiref (L, "xmono", luaopen_mono, 1);
+    lua_pop (L, 1);
+    return L;
 }
 
 extern "C" int so_main() {

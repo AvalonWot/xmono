@@ -10,6 +10,7 @@ description: mono API 到 lua包装的C++层函数实现
  */
 #include <stdarg.h>
 #include <string.h>
+#include <stdint.h>
 #include "lua/lua.hpp"
 #include "mono/metadata/assembly.h"
 #include "mono/metadata/class.h"
@@ -31,7 +32,7 @@ description: mono API 到 lua包装的C++层函数实现
  * 
  * 该调用只针对Static methods, 和 non-Static methods, 不针对generic methods
  */
-static void *call_method (lua_State *L, int base, MonoObject *thiz, MonoMethod *method) {
+static void *call_method (lua_State *L, int base, MonoObject *thiz, MonoMethod *method, MonoObject **ex) {
     MonoMethodSignature *sig = mono_method_signature (method);
     if (!sig)
         luaL_error (L, "can not get the method's signature.");
@@ -161,13 +162,23 @@ static void *call_method (lua_State *L, int base, MonoObject *thiz, MonoMethod *
                 luaL_error (L, "unknow method args type : 0x%02X", mono_type_get_type (param_type));
         }
     }
-    MonoObject *ex = 0;
-    MonoObject *ret = mono_runtime_invoke (method, thiz, args, &ex);
-    if (ex)
-        luaL_error (L, "An exception was thrown in method.");
+    MonoObject *ret = mono_runtime_invoke (method, thiz, args, ex);
     //MonoType *ret_type = mono_signature_get_return_type (sig);
     LOGD ("call_method be called!");
     return ret;
+}
+
+static int l_get_method (lua_State *L) {
+    MonoClass *clazz = (MonoClass*)lua_touserdata (L, 1);
+    char const *method_sig = luaL_checkstring (L, 2);
+    if (!clazz)
+        luaL_error (L, "method can not be null.");
+    MonoMethod *method = get_class_method (clazz, method_sig);
+    if (method)
+        lua_pushlightuserdata (L, method);
+    else
+        lua_pushnil (L);
+    return 1;
 }
 
 /*
@@ -202,14 +213,100 @@ static int l_newobj (lua_State *L) {
     if (!ctor)
         luaL_error (L, "class %s can not find the %s.", mono_class_get_name (clazz), ctor_sig);
     MonoObject *obj = mono_object_new (mono_domain_get (), clazz);
-    call_method (L, 3, obj, ctor);
+    MonoObject *ex = 0;
+    call_method (L, 3, obj, ctor, &ex);
+    if (ex)
+        luaL_error (L, "init the obj cause an exception!");
     lua_pushlightuserdata (L, obj);
     return 1;
+}
+
+/*
+ * ex, v = mono.call_method (obj, method, args)
+ * method 被调用的method方法(MonoMethod*)
+ * thiz 被调用的method的this指针, static函数请填0
+ * args 参数表
+ * 返回值 :
+ *  ex : 若无异常发生, 该值为nil
+ *  v : 函数返回值
+ */
+static int l_call_method (lua_State *L) {
+    if (lua_gettop (L) < 2)
+        luaL_error (L, "call_method need lest 2 args.");
+    MonoObject *obj = (MonoObject*)lua_touserdata (L, 1);
+    MonoMethod *method = (MonoMethod*)lua_touserdata (L, 2);
+    if (!method)
+        luaL_error (L, "call_method need 2th arg not nil.");
+    MonoObject *ex = 0;
+    void *ret = call_method (L, 3, obj, method, &ex);
+    if (ex)
+        lua_pushlightuserdata (L, ex);
+    else
+        lua_pushnil (L);
+    MonoMethodSignature *sig = mono_method_signature (method);
+    MonoType *ret_type = mono_signature_get_return_type (sig);
+    if (mono_type_is_reference (ret_type)) {
+        lua_pushlightuserdata (L, ret);
+    } else {
+        switch (mono_type_get_type (ret_type)) {
+            case MONO_TYPE_VOID:
+                lua_pushnil (L);
+                break;
+            case MONO_TYPE_BOOLEAN:
+                lua_pushboolean (L, *(bool*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_U2:
+            case MONO_TYPE_CHAR:
+                /*char 用int来表示*/
+                lua_pushinteger (L, *(uint16_t*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_I1:
+                lua_pushinteger(L, *(int8_t*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_U1:
+                lua_pushinteger(L, *(uint8_t*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_I2:
+                lua_pushinteger (L, *(int16_t*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_I4:
+                lua_pushinteger(L, *(int32_t*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_VALUETYPE:
+            case MONO_TYPE_U4:
+                lua_pushinteger(L, *(uint32_t*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_I8:
+            case MONO_TYPE_U8: {
+                void *v = mono_object_unbox (obj);
+                memcpy (lua_newuserdata (L, sizeof (int64_t)), v, sizeof (int64_t));
+                break;
+            }
+            case MONO_TYPE_R4:
+                lua_pushnumber(L, *(float*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_R8:
+                lua_pushnumber(L, *(double*)mono_object_unbox (obj));
+                break;
+            case MONO_TYPE_I:
+            case MONO_TYPE_U:
+                luaL_error (L, "donot support the intptr & uintptr.");
+            case MONO_TYPE_MVAR:
+                luaL_error (L, "generic method dont be supported.");
+            case MONO_TYPE_PTR:
+                luaL_error (L, "dont support the ptr type.");
+            default:
+                luaL_error (L, "unknow method args type : 0x%02X", mono_type_get_type (ret_type));
+        }
+    }
+    return 2;
 }
 
 static const luaL_Reg R[] = {
     {"new", l_newobj},
     {"get_class", l_get_class},
+    {"get_method", l_get_method},
+    {"call_method", l_call_method},
     {0, 0}
 };
 

@@ -269,7 +269,7 @@ class XMonoWindow(QtGui.QMainWindow):
 
     def _funcDoubleClicked(self, item):
         if item.column() != 0:
-            item = self.ui.funcCntTableWidget.item(item.row(), 0)
+            item = self.ui.funcCntTableWidget.item(item.row(), 1)
         s = item.text()
         self._disasmMethod(str(s))
 

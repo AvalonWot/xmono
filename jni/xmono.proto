@@ -58,14 +58,25 @@ message LuaExecReq {
 	required string lua_code = 1;
 }
 
+enum LogLevel{
+	err = 1;
+	info = 2;
+	warring = 3;
+	debug = 4;
+}
 //该消息作为lua中的任意回包
 message LuaExecRsp {
-	enum LogLevel{
-		err = 1;
-		info = 2;
-		warring = 3;
-		debug = 4;
-	}
+	required LogLevel level = 1;
+	required string message = 2;
+}
+
+message LuaHookReq {
+	required string image_name = 1;
+	required uint32 method_token = 2;
+	required string lua_code = 3;
+}
+
+message LuaHookRsp {
 	required LogLevel level = 1;
 	required string message = 2;
 }

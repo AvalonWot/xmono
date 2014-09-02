@@ -89,6 +89,8 @@ static pthread_mutex_t hooked_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::map<MonoMethod*, HookInfo*> hooked_method_dict;
 static pthread_mutex_t replace_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::map<MonoMethod*, bool> replace_method_dict;
+static pthread_mutex_t lua_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
+std::map<MonoMethod*, char const*> lua_hook_dict;
 static bool trace_switch = false;
 
 
@@ -121,13 +123,13 @@ static char *specific_hook (void *org, void *method_obj, void *func) {
      */
     char *p = alloc_specific_trampo ();
     /*Fixme : 每次更新这段跳板代码都是蛋疼, 有没有方便高效稳定的方法?*/
-    unsigned char code[96] = {
+    unsigned char code[88] = {
         0x0F, 0x00, 0x2D, 0xE9, 0xFF, 0xFF, 0x2D, 0xE9, 0x50, 0x00, 0x4D, 0xE2, 0x34, 0x00, 0x8D, 0xE5, 
         0x3C, 0xE0, 0x8D, 0xE5, 0x40, 0x10, 0x4D, 0xE2, 0x30, 0x40, 0xA0, 0xE3, 0x04, 0x40, 0x4F, 0xE0, 
         0x08, 0x00, 0x94, 0xE5, 0x0D, 0x20, 0xA0, 0xE1, 0x0F, 0xE0, 0xA0, 0xE1, 0x00, 0xF0, 0x94, 0xE5, 
-        0xFF, 0x1F, 0xBD, 0xE8, 0x04, 0xE0, 0x9D, 0xE5, 0x1C, 0xD0, 0x8D, 0xE2, 0x01, 0x80, 0x2D, 0xE9, 
-        0x58, 0x00, 0xA0, 0xE3, 0x00, 0x00, 0x4F, 0xE0, 0x04, 0x00, 0x90, 0xE5, 0x04, 0x00, 0x8D, 0xE5, 
-        0x01, 0x80, 0xBD, 0xE8, 0x00, 0xF0, 0x20, 0xE3, 0x00, 0xF0, 0x20, 0xE3, 0x00, 0xF0, 0x20, 0xE3
+        0xFF, 0x1F, 0xBD, 0xE8, 0x04, 0xE0, 0x9D, 0xE5, 0x0C, 0xD0, 0x8D, 0xE2, 0x0F, 0x00, 0xBD, 0xE8, 
+        0x01, 0x80, 0x2D, 0xE9, 0x5C, 0x00, 0xA0, 0xE3, 0x00, 0x00, 0x4F, 0xE0, 0x04, 0x00, 0x90, 0xE5, 
+        0x04, 0x00, 0x8D, 0xE5, 0x01, 0x80, 0xBD, 0xE8
     };
     /*
      * stmfd sp!, {r0-r3} 
@@ -144,9 +146,10 @@ static char *specific_hook (void *org, void *method_obj, void *func) {
      * ldr pc, [r4]
      * ldmfd sp!, {r0-r12}
      * ldr lr, [sp, #4]     //恢复lr, 但不恢复sp, pc
-     * add sp, sp, #28      //清除掉栈中的 {sp, lr, pc} 以及 {r0-r3}
+     * add sp, sp, #12      //清除掉栈中的 {sp, lr, pc} 以及 {r0-r3}
+     * ldmfd sp!, {r0-r3}   //加载可能被修改的参数
      * stmfd sp!, {r0, pc}
-     * ldr r0, =88
+     * ldr r0, =92
      * sub r0, pc, r0
      * ldr r0, [r0, #4]
      * str r0, [sp, #4]     //设置old_func域中的指针为继续执行的PC
@@ -161,6 +164,57 @@ static char *specific_hook (void *org, void *method_obj, void *func) {
     }
     cache_flush ((uint32_t)p, (uint32_t)(p + SP_BLOCK_SIZE));
     return p;
+}
+
+static pthread_key_t t_lua_key;
+static pthread_once_t t_lua_once = PTHREAD_ONCE_INIT;
+
+static void t_lua_free (void *p) {
+    lua_State *L = (lua_State*)p;
+    lua_close (L);
+}
+
+static void make_key() {
+    (void) pthread_key_create (&t_lua_key, t_lua_free);
+}
+
+static void lua_hook (MonoMethod *method, void *args[], ArmRegs *regs) {
+    lua_State *L = 0;
+    pthread_once (&t_lua_once, make_key);
+    if ((L = (lua_State*)pthread_getspecific (t_lua_key)) == 0) {
+        L = lua_env_new ();
+        pthread_setspecific (t_lua_key, L);
+        if (L == 0) {
+            xmono::LuaExecRsp rsp;
+            rsp.set_level (xmono::err);
+            rsp.set_message ("lua_State can not be create.");
+            std::string out;
+            rsp.SerializeToString (&out);
+            ecmd_send (XMONO_ID_LUA_HOOK_RSP, (uint8_t const*)out.c_str (), out.size ());
+            return;
+        }
+    }
+    pthread_mutex_lock (&lua_hook_mutex);
+    char const *lua_codes = 0;
+    if (lua_hook_dict.find (method) != lua_hook_dict.end ())
+        lua_codes = lua_hook_dict[method];
+    pthread_mutex_unlock (&lua_hook_mutex);
+
+    if ((lua_codes || !(lua_pushstring (L, "lua code is nil!"))) &&
+        luaL_loadstring (L, lua_codes) == LUA_OK) {
+        lua_pushlightuserdata (L, method);
+        lua_pushlightuserdata (L, (void*)args);
+        if (lua_pcall (L, 2, LUA_MULTRET, 0) == LUA_OK)
+            return;
+    }
+    xmono::LuaExecRsp rsp;
+    rsp.set_level (xmono::err);
+    rsp.set_message (lua_tostring (L, -1));
+    std::string out;
+    rsp.SerializeToString (&out);
+    ecmd_send (XMONO_ID_LUA_HOOK_RSP, (uint8_t const*)out.c_str (), out.size ());
+    lua_settop(L, 0);
+    return;
 }
 
 static int walk_stack (MonoDomain *domain, MonoContext *ctx, MonoJitInfo *jit_info, void *user_data) {
@@ -470,9 +524,8 @@ static void replace_method (Package *pkg) {
     pthread_mutex_unlock (&replace_mutex);
 
     p = mono_compile_method (new_method);
-    memcpy (hooked_method_dict[method]->specific_hook + 4, &p, 4);
-
     pthread_mutex_lock (&hooked_mutex);
+    memcpy (hooked_method_dict[method]->specific_hook + 4, &p, 4);
     old_p = mono_jit_info_get_code_start (hooked_method_dict[method]->jinfo);
     pthread_mutex_unlock (&hooked_mutex);
 
@@ -548,7 +601,7 @@ static void lua_code_exec (Package *pkg) {
     MonoThread *thread = mono_thread_attach (mono_domain_get_by_id (0));
     do {
         if (L == 0 && !(L = lua_env_new ())) {
-            rsp.set_level (xmono::LuaExecRsp::err);
+            rsp.set_level (xmono::err);
             rsp.set_message ("create a lua_State err.");
             break;
         }
@@ -558,17 +611,61 @@ static void lua_code_exec (Package *pkg) {
             return;
         }
         if (luaL_dostring (L, req.lua_code ().c_str ())) {
-            rsp.set_level (xmono::LuaExecRsp::err);
+            rsp.set_level (xmono::err);
             rsp.set_message (lua_tostring (L, -1));
             break;
         }
-        rsp.set_level (xmono::LuaExecRsp::debug);
+        rsp.set_level (xmono::debug);
         rsp.set_message ("exec the lua string ok.");
     } while (0);
     mono_thread_detach (thread);
     std::string out;
     rsp.SerializeToString (&out);
     ecmd_send (XMONO_ID_LUA_EXEC_RSP, (uint8_t const*)out.c_str (), out.size ());
+    return;
+}
+
+static void hook_with_lua (Package *pkg) {
+    xmono::LuaHookReq req;
+    xmono::LuaHookRsp rsp;
+    std::string str((char*)pkg->body, pkg->all_len - sizeof (Package));
+    if (!req.ParseFromString (str)) {
+        LOGD ("xmono::LuaHookReq ParseFromString err!");
+        return;
+    }
+    do {
+        MonoMethod *method = get_method_with_token (req.image_name ().c_str (), req.method_token ());
+        if (!method) {
+            rsp.set_level (xmono::err);
+            rsp.set_message ("method can not be find.");
+            break;
+        }
+        if (req.lua_code ().empty ()) {
+            rsp.set_level (xmono::err);
+            rsp.set_message ("lua_code must not be nil.");
+            break;
+        }
+        char *p = new char[req.lua_code ().size () + 1];
+        memcpy (p, req.lua_code ().c_str (), req.lua_code ().size () + 1);
+        pthread_mutex_lock (&hooked_mutex);
+        if (hooked_method_dict.find (method) != hooked_method_dict.end ()) {
+            void (*func)(MonoMethod*, void**, ArmRegs*) = lua_hook;
+            memcpy (hooked_method_dict[method]->specific_hook, &func, 4);
+            rsp.set_level (xmono::info);
+            rsp.set_message ("lua hook ok.");
+        } else {
+            // Fixme : 对于未hook的函数的处理
+            rsp.set_level (xmono::err);
+            rsp.set_message ("method dont be hook.");
+        }
+        pthread_mutex_unlock (&hooked_mutex);
+        pthread_mutex_lock (&lua_hook_mutex);
+        lua_hook_dict[method] = p;
+        pthread_mutex_unlock (&lua_hook_mutex);
+    } while (0);
+    std::string out;
+    rsp.SerializeToString (&out);
+    ecmd_send (XMONO_ID_LUA_HOOK_RSP, (uint8_t const*)out.c_str (), out.size ());
     return;
 }
 
@@ -589,6 +686,7 @@ static void init_network () {
     ecmd_register_resp (XMONO_ID_STACK_TRACE_REP, set_stack_trace);
     ecmd_register_resp (XMONO_ID_UNSTACK_TRACE_REP, unset_stack_trace);
     ecmd_register_resp (XMONO_ID_LUA_EXEC_REP, lua_code_exec);
+    ecmd_register_resp (XMONO_ID_LUA_HOOK_REP, hook_with_lua);
     LOGD ("ecmd init over.");
 }
 

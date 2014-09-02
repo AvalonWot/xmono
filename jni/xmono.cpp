@@ -14,16 +14,19 @@ description: hook com.tencent.Alice的数据加密点, 以获取明文数据
 #include <sys/mman.h>
 #include <zlib.h>
 #include <android/log.h>
-#include <mono/metadata/assembly.h>
+#include "mono/metadata/assembly.h"
 #include "mono/metadata/class.h"
 #include "mono/metadata/image.h"
 #include "mono/metadata/threads.h"
 #include "mono/metadata/mono-debug.h"
 #include "mono/metadata/debug-helpers.h"
 #include "mono/metadata/profiler.h"
+#include "lua/lua.hpp"
 #include "dis-cil.h"
 #include "hook.h"
 #include "helper.h"
+#include "mono-helper.h"
+#include "lua-mono.h"
 #include "ecmd.h"
 #include "xmono.pb.h"
 
@@ -31,19 +34,8 @@ description: hook com.tencent.Alice的数据加密点, 以获取明文数据
 #define LOGD(fmt, args...)  __android_log_print(ANDROID_LOG_DEBUG,LOG_TAG, fmt, ##args)
 #define LOGE(fmt, args...)  __android_log_print(ANDROID_LOG_ERROR,LOG_TAG, fmt, ##args)
 
-/*mono头文件中未声明 但实际却导出的函数和结构*/
-extern "C" void g_free (void const *p);
-extern "C" char *mono_pmip (void *ip);
-
-typedef struct {
-    uint32_t eip;          // pc 
-    uint32_t ebp;          // fp
-    uint32_t esp;          // sp
-    uint32_t regs [16];
-    double fregs [8];   //arm : 8
-} MonoContext;
-typedef int (*MonoStackFrameWalk) (MonoDomain*, MonoContext*, MonoJitInfo*, void*);
-extern "C" void mono_walk_stack (MonoDomain *domain, void *jit_tls, MonoContext *start_ctx, MonoStackFrameWalk func, void *user_data);
+/*前置函数声明*/
+static lua_State *lua_env_new ();
 
 #define CMDID(a,b,c) a = c,
 enum CmdId {
@@ -99,89 +91,6 @@ static pthread_mutex_t replace_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::map<MonoMethod*, bool> replace_method_dict;
 static bool trace_switch = false;
 
-/*mono辅助函数*/
-static void print_class_name (MonoClass *clazz) {
-    LOGD ("class name : %s", mono_class_get_name (clazz));
-}
-
-static void print_object_class_name (MonoObject *obj) {
-    MonoClass *clazz = mono_object_get_class (obj);
-    print_class_name (clazz);
-}
-
-static void print_class_all_methods (MonoClass *clz) {
-    void *it = 0;
-    MonoMethod *m;
-    while (m = mono_class_get_methods (clz, &it)) {
-        char *name = mono_method_full_name (m, 1);
-        LOGD ("%s", name);
-        g_free (name);
-    }
-}
-
-/*获取对象中的一个字段的包装函数*/
-static MonoMethod *get_class_method (MonoClass *clz, char const *full_name) {
-    void *it = 0;
-    MonoMethod *m;
-    while (m = mono_class_get_methods (clz, &it)) {
-        char *name = mono_method_full_name (m, 1);
-        if (strcmp (full_name, name) == 0) {
-            g_free (name);
-            return m;
-        }
-        g_free (name);
-    }
-}
-
-static void get_obj_field_value (MonoObject *obj, const char *key, void *value) {
-    MonoClass *clazz = mono_object_get_class (obj);
-    assert (clazz);
-    MonoClassField *field = mono_class_get_field_from_name (clazz, key);
-    assert (field);
-    void *re = 0;
-    mono_field_get_value (obj, field, value);
-}
-
-static void set_obj_field_value (MonoObject *obj, char const *val_name, void *value) {
-    MonoClass *clz = mono_object_get_class (obj);
-    MonoClassField *field = mono_class_get_field_from_name (clz, val_name);
-    mono_field_set_value (obj, field, value);
-}
-
-static char const *get_method_image_name (MonoMethod *method) {
-    MonoClass *clazz = mono_method_get_class (method);
-    if (!clazz) return 0;
-    MonoImage *image = mono_class_get_image (clazz);
-    if (!image) return 0;
-    return mono_image_get_name (image);
-}
-
-static char const *get_method_class_name (MonoMethod *method) {
-    MonoClass *clazz = mono_method_get_class (method);
-    return mono_class_get_name (clazz);
-}
-
-static char const *get_method_namespace_name (MonoMethod *method) {
-    MonoClass *clazz = mono_method_get_class (method);
-    return mono_class_get_namespace (clazz);
-}
-
-static MonoMethod *get_method_with_token (std::string const &image_name, uint32_t token, std::string &err) {
-    MonoImage *image = mono_image_loaded (image_name.c_str ());
-    if (!image) {
-        err = "dont have the image : " + image_name;
-        LOGD ("%s", err.c_str ());
-        return 0;
-    }
-    MonoMethod *method = (MonoMethod*)mono_ldtoken (image, token, 0, 0);
-    if (!method) {
-        err = "dont have the method, token";
-        LOGD ("%s", err.c_str ());
-        return 0;
-    }
-    return method;
-}
-/*mono辅助函数END*/
 
 #define SP_BLOCK_SIZE 108
 static std::deque<char*> mem_cache;
@@ -455,8 +364,7 @@ static void unset_stack_trace (Package *pkg) {
         LOGD ("xmono::StackTraceReq ParseFromString err!");
         return;
     }
-    std::string err;
-    MonoMethod *method = get_method_with_token(req.image_name ().c_str (), req.method_token (), err);
+    MonoMethod *method = get_method_with_token(req.image_name ().c_str (), req.method_token ());
     if (!method) {
         return;
     }
@@ -479,11 +387,10 @@ static void set_stack_trace (Package *pkg) {
         return;
     }
     do {
-        std::string err;
-        MonoMethod *method = get_method_with_token(req.image_name ().c_str (), req.method_token (), err);
+        MonoMethod *method = get_method_with_token(req.image_name ().c_str (), req.method_token ());
         if (!method) {
             rsp.set_err (false);
-            rsp.set_err_str (err);
+            rsp.set_err_str (helper_last_err ());
             break;
         }
         pthread_mutex_lock (&hooked_mutex);
@@ -520,16 +427,17 @@ static void replace_method (Package *pkg) {
     MonoMethodHeader *mh;
     MonoThread *thread;
     MonoMethod *new_method;
-    MonoMethod * method = get_method_with_token (req.image_name ().c_str (), req.method_token (), err);
-    MonoDomain *domain = mono_domain_get_by_id (req.domain_id ());
+    MonoDomain *domain;
+    MonoMethod * method = get_method_with_token (req.image_name ().c_str (), req.method_token ());
+    if (!method) {
+        rsp.set_err (false);
+        rsp.set_msg (helper_last_err ());
+        goto replace_method_end;
+    }
+    domain = mono_domain_get_by_id (req.domain_id ());
     if (!domain) {
         rsp.set_err (false);
         rsp.set_msg ("can not get the domain from id");
-        goto replace_method_end;
-    }
-    if (!method) {
-        rsp.set_err (false);
-        rsp.set_msg (err);
         goto replace_method_end;
     }
     mh = mono_method_get_header (method);
@@ -587,9 +495,11 @@ static void disasm_method (Package *pkg) {
         LOGD ("xmono::DisasmMethodReq ParseFromString err!");
         return;
     }
-    std::string err;
-    MonoMethod *method = get_method_with_token (req.image_name ().c_str (), req.method_token (), err);
+    std::string err("");
+    MonoMethod *method = get_method_with_token (req.image_name ().c_str (), req.method_token ());
+    if (!method) err += helper_last_err ();
     MonoImage *image = mono_image_loaded (req.image_name ().c_str ());
+    if (!image) err += "  image : " + req.image_name () + " can not be find!";
     if (image && method) {
         MemWriter writer(4096);
         char const *mname = mono_method_full_name (method, 1);
@@ -631,6 +541,37 @@ static void ecmd_err_callback () {
     exit (1);
 }
 
+static void lua_code_exec (Package *pkg) {
+    static lua_State *L = 0;
+    xmono::LuaExecRsp rsp;
+    xmono::LuaExecReq req;
+    MonoThread *thread = mono_thread_attach (mono_domain_get_by_id (0));
+    do {
+        if (L == 0 && !(L = lua_env_new ())) {
+            rsp.set_level (xmono::LuaExecRsp::err);
+            rsp.set_message ("create a lua_State err.");
+            break;
+        }
+        std::string str((char*)pkg->body, pkg->all_len - sizeof (Package)); //Fixme : 修复头部all_len是总长的问题
+        if (!req.ParseFromString (str)) {
+            LOGD ("xmono::LuaExecReq ParseFromString err!");
+            return;
+        }
+        if (luaL_dostring (L, req.lua_code ().c_str ())) {
+            rsp.set_level (xmono::LuaExecRsp::err);
+            rsp.set_message (lua_tostring (L, -1));
+            break;
+        }
+        rsp.set_level (xmono::LuaExecRsp::debug);
+        rsp.set_message ("exec the lua string ok.");
+    } while (0);
+    mono_thread_detach (thread);
+    std::string out;
+    rsp.SerializeToString (&out);
+    ecmd_send (XMONO_ID_LUA_EXEC_RSP, (uint8_t const*)out.c_str (), out.size ());
+    return;
+}
+
 static void init_network () {
     if (!ecmd_init (ecmd_err_callback)) {
         LOGD ("ecmd_init err : %s", ecmd_err_str ());
@@ -647,7 +588,47 @@ static void init_network () {
     ecmd_register_resp (XMONO_ID_LIST_DOMAIN_REP, list_assemblys);
     ecmd_register_resp (XMONO_ID_STACK_TRACE_REP, set_stack_trace);
     ecmd_register_resp (XMONO_ID_UNSTACK_TRACE_REP, unset_stack_trace);
+    ecmd_register_resp (XMONO_ID_LUA_EXEC_REP, lua_code_exec);
     LOGD ("ecmd init over.");
+}
+
+static int l_log (lua_State *L) {
+    lua_getglobal (L, "string");
+    lua_getfield (L, -1, "format");
+    lua_insert (L, 1);
+    lua_pop (L, 1);
+    if (lua_pcall (L, lua_gettop (L) - 1, 1, 0) != LUA_OK)
+        return lua_error (L);
+    LOGD ("[lua log] : %s", luaL_checkstring (L, -1));
+    return 0;
+}
+
+static const luaL_Reg R[] = {
+    {"log", l_log},
+    {0, 0}
+};
+
+int luaopen_xmono (lua_State *L) {
+    luaL_newlib (L, R);
+    return 1;
+}
+
+static lua_State *lua_env_new () {
+    lua_State *L = luaL_newstate ();
+    luaL_openlibs (L);
+    char const *rpath_code = "package.cpath = package.cpath .. '/data/local/tmp/xmono/lualibs/lib?.so'\n"
+                             "package.path = package.path .. '/data/local/tmp/xmono/lualibs/?.lua'\n";
+    if (luaL_dostring (L, rpath_code)) {
+        char const *err = lua_tostring (L, -1);
+        LOGE ("%s", err);
+        lua_close (L);
+        return 0;
+    }
+    luaL_requiref (L, "mono", luaopen_mono, 1);
+    lua_pop (L, 1);
+    luaL_requiref (L, "xmono", luaopen_xmono, 1);
+    lua_pop (L, 1);
+    return L;
 }
 
 extern "C" int so_main() {

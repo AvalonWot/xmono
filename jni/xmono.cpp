@@ -592,6 +592,27 @@ static void init_network () {
     LOGD ("ecmd init over.");
 }
 
+static int l_log (lua_State *L) {
+    lua_getglobal (L, "string");
+    lua_getfield (L, -1, "format");
+    lua_insert (L, 1);
+    lua_pop (L, 1);
+    if (lua_pcall (L, lua_gettop (L) - 1, 1, 0) != LUA_OK)
+        return lua_error (L);
+    LOGD ("[lua log] : %s", luaL_checkstring (L, -1));
+    return 0;
+}
+
+static const luaL_Reg R[] = {
+    {"log", l_log},
+    {0, 0}
+};
+
+int luaopen_xmono (lua_State *L) {
+    luaL_newlib (L, R);
+    return 1;
+}
+
 static lua_State *lua_env_new () {
     lua_State *L = luaL_newstate ();
     luaL_openlibs (L);
@@ -603,7 +624,9 @@ static lua_State *lua_env_new () {
         lua_close (L);
         return 0;
     }
-    luaL_requiref (L, "xmono", luaopen_mono, 1);
+    luaL_requiref (L, "mono", luaopen_mono, 1);
+    lua_pop (L, 1);
+    luaL_requiref (L, "xmono", luaopen_xmono, 1);
     lua_pop (L, 1);
     return L;
 }

@@ -200,13 +200,15 @@ static void lua_hook (MonoMethod *method, void *args[], ArmRegs *regs) {
         lua_codes = lua_hook_dict[method];
     pthread_mutex_unlock (&lua_hook_mutex);
 
-    if ((lua_codes || !(lua_pushstring (L, "lua code is nil!"))) &&
-        luaL_loadstring (L, lua_codes) == LUA_OK) {
-        lua_pushlightuserdata (L, method);
-        lua_pushlightuserdata (L, (void*)args);
-        if (lua_pcall (L, 2, LUA_MULTRET, 0) == LUA_OK)
-            return;
+    lua_pushlightuserdata (L, method);
+    lua_setglobal (L, "method");
+    lua_pushlightuserdata (L, (void*)args);
+    lua_setglobal (L, "args");
+    if (lua_codes && !luaL_dostring (L, lua_codes)) {
+        lua_settop(L, 0);
+        return;
     }
+
     xmono::LuaExecRsp rsp;
     rsp.set_level (xmono::err);
     rsp.set_message (lua_tostring (L, -1));

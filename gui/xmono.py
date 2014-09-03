@@ -139,7 +139,7 @@ class XMonoWindow(QtGui.QMainWindow):
         self.cilDisasmed.connect(self.cilWindow.showCil)
         self.ui.cmdLineEdit.returnPressed.connect(self._cmdHandle)
         self.ui.funcCntTableWidget.customContextMenuRequested.connect(self._showFuncCntRMenu)
-        self.stackTraceWindow.deleteMethod.connect(self._traceMethod)
+        self.stackTraceWindow.deleteMethod.connect(self._disTraceMethod)
         self.stackTraceWindow.selectMethod.connect(self._disasmMethod)
         self.cilWindow.compiled.connect(self._replaceMethod)
 
@@ -321,6 +321,9 @@ class XMonoWindow(QtGui.QMainWindow):
         if item.column() != 0:
             item = self.ui.funcCntTableWidget.item(item.row(), 1)
         return str(item.text())
+
+    def _disTraceMethod(self, s):
+        self._traceMethod(s, False)
 
     def _traceMethod(self, s, sw):
         s = str(s)

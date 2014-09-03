@@ -8,7 +8,7 @@ import stack_traceUI
 
 class StackTraceWindow(QtGui.QMainWindow):
     """stack_trace窗口主类"""
-    deleteMethodSig = QtCore.pyqtSignal(str, bool, name = "deleteMethod")
+    deleteMethodSig = QtCore.pyqtSignal(str, name = "deleteMethod")
     selectMethodSig = QtCore.pyqtSignal(str, name = "selectMethod")
     def __init__(self, parent=None):
         QtGui.QMainWindow.__init__(self, parent)
@@ -53,14 +53,14 @@ class StackTraceWindow(QtGui.QMainWindow):
         if item == None:
             return
         s = str(item.text())
-        self.deleteMethodSig.emit(s, False)
+        self.deleteMethodSig.emit(s)
         self.funcList.remove(s)
         self._updateFuncListShow()
 
     def _deleteAllMethod(self):
         while len(self.funcList) > 0:
             s = self.funcList.pop()
-            self.deleteMethodSig.emit(s, False)
+            self.deleteMethodSig.emit(s)
         self.ui.stackTraceListWidget.clear()
 
     def _clearTraceResult(self):

@@ -319,7 +319,7 @@ class XMonoWindow(QtGui.QMainWindow):
         if item == None:
             return
         if item.column() != 0:
-            item = self.ui.funcCntTableWidget.item(item.row(), 0)
+            item = self.ui.funcCntTableWidget.item(item.row(), 1)
         return str(item.text())
 
     def _traceMethod(self, s, sw):

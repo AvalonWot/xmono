@@ -803,9 +803,33 @@ static int l_get_args (lua_State *L) {
     return 1;
 }
 
+static int l_get_this_pointer (lua_State *L) {
+    lua_getglobal (L, "method");
+    MonoMethod *method = (MonoMethod*)lua_touserdata (L, -1);
+    lua_pop (L, 1);
+    if (!method)
+        luaL_error (L, "[luahook] : method is nil!");
+
+    /*static函数无this指针*/
+    uint32_t iflags;
+    int flag = mono_method_get_flags (method, &iflags);
+    if (flag & MONO_METHOD_ATTR_STATIC)
+        return luaL_error (L, "static method not have this pointer.");
+
+    lua_getglobal (L, "args");
+    void **args = (void**)lua_touserdata (L, -1);
+    lua_pop (L, 1);
+    if (!args)
+        return luaL_error (L, "args is nil!");
+
+    lua_pushlightuserdata (L, args[0]);
+    return 1;
+}
+
 static const luaL_Reg R[] = {
     {"log", l_log},
     {"get_args", l_get_args},
+    {"get_this_pointer", l_get_this_pointer},
     {0, 0}
 };
 

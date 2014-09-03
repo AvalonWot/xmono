@@ -84,6 +84,7 @@ struct _ArmRegs {
     uint32_t pc;
 };
 typedef struct _ArmRegs ArmRegs;
+typedef void (*CommonHookFunc)(MonoMethod*, void**, ArmRegs*);
 
 /*全局变量*/
 static pthread_mutex_t hooked_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -303,12 +304,8 @@ static void send_trace_log (std::map<MonoMethod*, CallInfo> const &dict) {
     return;
 }
 
-/**
- * 该函数由specific_hook的shellcode发起调用, 原本有三个参数, 这里利用arm是寄存器传参的特性, 省略了两个,
- * 因此移植时需要注意
- */
 pthread_mutex_t trace_list_mutex = PTHREAD_MUTEX_INITIALIZER;
-static void func_trace (MonoMethod *method) {
+static void func_trace (MonoMethod *method, void *args[], ArmRegs *regs) {
     pthread_mutex_lock (&trace_list_mutex);
     static std::map<MonoMethod*, CallInfo>trace_log;
     static uint32_t order = 0;
@@ -648,14 +645,20 @@ static void hook_with_lua (Package *pkg) {
             rsp.set_message ("lua_code must not be nil.");
             break;
         }
-        char *p = new char[req.lua_code ().size () + 1];
+        char *p = 0;
+        if (!req.disable ())
+            p = new char[req.lua_code ().size () + 1];
         memcpy (p, req.lua_code ().c_str (), req.lua_code ().size () + 1);
         pthread_mutex_lock (&hooked_mutex);
         if (hooked_method_dict.find (method) != hooked_method_dict.end ()) {
-            void (*func)(MonoMethod*, void**, ArmRegs*) = lua_hook;
+            CommonHookFunc func = 0;
+            if (req.disable ())
+                func = func_trace;
+            else
+                func = lua_hook;
             memcpy (hooked_method_dict[method]->specific_hook, &func, 4);
             rsp.set_level (xmono::info);
-            rsp.set_message ("lua hook ok.");
+            rsp.set_message ("hook_with_lua completion.");
         } else {
             // Fixme : 对于未hook的函数的处理
             rsp.set_level (xmono::err);
@@ -665,7 +668,10 @@ static void hook_with_lua (Package *pkg) {
         pthread_mutex_lock (&lua_hook_mutex);
         if (lua_hook_dict.find (method) != lua_hook_dict.end ())
             delete[] lua_hook_dict[method];
-        lua_hook_dict[method] = p;
+        if (req.disable ())
+            lua_hook_dict.erase (method);
+        else
+            lua_hook_dict[method] = p;
         pthread_mutex_unlock (&lua_hook_mutex);
     } while (0);
     std::string out;

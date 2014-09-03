@@ -660,6 +660,8 @@ static void hook_with_lua (Package *pkg) {
         }
         pthread_mutex_unlock (&hooked_mutex);
         pthread_mutex_lock (&lua_hook_mutex);
+        if (lua_hook_dict.find (method) != lua_hook_dict.end ())
+            delete[] lua_hook_dict[method];
         lua_hook_dict[method] = p;
         pthread_mutex_unlock (&lua_hook_mutex);
     } while (0);

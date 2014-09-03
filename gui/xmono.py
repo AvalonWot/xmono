@@ -156,6 +156,7 @@ class XMonoWindow(QtGui.QMainWindow):
         self._ecmd.registerResp(XMONO_ID_STACK_TRACE_RSP, self._recvStackTrace)
         self._ecmd.registerResp(XMONO_ID_REPLACE_METHOD_RSP, self._recvReplaceMethodRsp)
         self._ecmd.registerResp(XMONO_ID_LUA_EXEC_RSP, self._recvExecLua)
+        self._ecmd.registerResp(XMONO_ID_LUA_HOOK_RSP, self._recvLuaHook)
 
     def _ecmdConnected(self):
         self.log.i(u"连接建立")
@@ -350,6 +351,14 @@ class XMonoWindow(QtGui.QMainWindow):
         pkg = ecmd.EcmdPacket(XMONO_ID_LUA_EXEC_REP, req.SerializeToString())
         self._ecmd.sendPacket(pkg)
 
+    def _luaHook(self, image_name, method_token, code):
+        req = xmono_pb2.LuaHookReq()
+        req.image_name = image_name
+        req.method_token = method_token
+        req.lua_code = code
+        pkg = ecmd.EcmdPacket(XMONO_ID_LUA_HOOK_REP, req.SerializeToString())
+        self._ecmd.sendPacket(pkg)
+
     def _recvDisasmMethod(self, packet):
         rsp = xmono_pb2.DisasmMethodRsp()
         rsp.ParseFromString(packet.data)
@@ -385,20 +394,27 @@ class XMonoWindow(QtGui.QMainWindow):
         l = rsp.stack.split("\n")[:-1]
         self.stackTraceWindow.addTraceResult(l)
 
+    def _luaLog(self, lv, msg):
+        if lv == xmono_pb2.err:
+            self.log.e (msg)
+        elif lv == xmono_pb2.info:
+            self.log.i (msg)
+        elif lv == xmono_pb2.warring:
+            self.log.w (msg)
+        elif lv == xmono_pb2.debug:
+            self.log.d (msg)
+        else:
+            self.log.e (u"Lua执行回包中出现未知的level")
+
     def _recvExecLua(self, packet):
         rsp = xmono_pb2.LuaExecRsp()
         rsp.ParseFromString(packet.data)
-        level = xmono_pb2.LuaExecRsp.LogLevel
-        if rsp.level == level.Value('err'):
-            self.log.e (rsp.message)
-        elif rsp.level == level.Value('info'):
-            self.log.i (rsp.message)
-        elif rsp.level == level.Value('warring'):
-            self.log.w (rsp.message)
-        elif rsp.level == level.Value('debug'):
-            self.log.d (rsp.message)
-        else:
-            self.log.e (u"Lua执行回包中出现未知的level")
+        _luaLog(rsp.level, rsp.message)
+
+    def _recvLuaHook(self, packet):
+        rsp = xmono_pb2.LuaHookRsp()
+        rsp.ParseFromString(packet.data)
+        _luaLog(rsp.level, rsp.message)
 
     def _print2Log(self, msg, level):
         """level WARNING INFO DEBUG ERROR"""

@@ -32,7 +32,7 @@ description: mono API 到 lua包装的C++层函数实现
  * 
  * 该调用只针对Static methods, 和 non-Static methods, 不针对generic methods
  */
-static void *call_method (lua_State *L, int base, MonoObject *thiz, MonoMethod *method, MonoObject **ex) {
+static MonoObject *call_method (lua_State *L, int base, MonoObject *thiz, MonoMethod *method, MonoObject **ex) {
     MonoMethodSignature *sig = mono_method_signature (method);
     if (!sig)
         luaL_error (L, "can not get the method's signature.");
@@ -238,7 +238,7 @@ static int l_call_method (lua_State *L) {
     if (!method)
         luaL_error (L, "call_method need 2th arg not nil.");
     MonoObject *ex = 0;
-    void *ret = call_method (L, 3, obj, method, &ex);
+    MonoObject *ret = call_method (L, 3, obj, method, &ex);
     if (ex)
         lua_pushlightuserdata (L, ex);
     else
@@ -253,40 +253,40 @@ static int l_call_method (lua_State *L) {
                 lua_pushnil (L);
                 break;
             case MONO_TYPE_BOOLEAN:
-                lua_pushboolean (L, *(bool*)mono_object_unbox (obj));
+                lua_pushboolean (L, *(bool*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_U2:
             case MONO_TYPE_CHAR:
                 /*char 用int来表示*/
-                lua_pushinteger (L, *(uint16_t*)mono_object_unbox (obj));
+                lua_pushinteger (L, *(uint16_t*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_I1:
-                lua_pushinteger(L, *(int8_t*)mono_object_unbox (obj));
+                lua_pushinteger(L, *(int8_t*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_U1:
-                lua_pushinteger(L, *(uint8_t*)mono_object_unbox (obj));
+                lua_pushinteger(L, *(uint8_t*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_I2:
-                lua_pushinteger (L, *(int16_t*)mono_object_unbox (obj));
+                lua_pushinteger (L, *(int16_t*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_I4:
-                lua_pushinteger(L, *(int32_t*)mono_object_unbox (obj));
+                lua_pushinteger(L, *(int32_t*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_VALUETYPE:
             case MONO_TYPE_U4:
-                lua_pushinteger(L, *(uint32_t*)mono_object_unbox (obj));
+                lua_pushinteger(L, *(uint32_t*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_I8:
             case MONO_TYPE_U8: {
-                void *v = mono_object_unbox (obj);
+                void *v = mono_object_unbox (ret);
                 memcpy (lua_newuserdata (L, sizeof (int64_t)), v, sizeof (int64_t));
                 break;
             }
             case MONO_TYPE_R4:
-                lua_pushnumber(L, *(float*)mono_object_unbox (obj));
+                lua_pushnumber(L, *(float*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_R8:
-                lua_pushnumber(L, *(double*)mono_object_unbox (obj));
+                lua_pushnumber(L, *(double*)mono_object_unbox (ret));
                 break;
             case MONO_TYPE_I:
             case MONO_TYPE_U:

@@ -21,6 +21,7 @@ description: hook com.tencent.Alice的数据加密点, 以获取明文数据
 #include "mono/metadata/mono-debug.h"
 #include "mono/metadata/debug-helpers.h"
 #include "mono/metadata/profiler.h"
+#include "mono/metadata/attrdefs.h"
 #include "lua/lua.hpp"
 #include "dis-cil.h"
 #include "hook.h"
@@ -125,7 +126,7 @@ static char *specific_hook (void *org, void *method_obj, void *func) {
     /*Fixme : 每次更新这段跳板代码都是蛋疼, 有没有方便高效稳定的方法?*/
     unsigned char code[88] = {
         0x0F, 0x00, 0x2D, 0xE9, 0xFF, 0xFF, 0x2D, 0xE9, 0x50, 0x00, 0x4D, 0xE2, 0x34, 0x00, 0x8D, 0xE5, 
-        0x3C, 0xE0, 0x8D, 0xE5, 0x40, 0x10, 0x4D, 0xE2, 0x30, 0x40, 0xA0, 0xE3, 0x04, 0x40, 0x4F, 0xE0, 
+        0x3C, 0xE0, 0x8D, 0xE5, 0x40, 0x10, 0x8D, 0xE2, 0x30, 0x40, 0xA0, 0xE3, 0x04, 0x40, 0x4F, 0xE0, 
         0x08, 0x00, 0x94, 0xE5, 0x0D, 0x20, 0xA0, 0xE1, 0x0F, 0xE0, 0xA0, 0xE1, 0x00, 0xF0, 0x94, 0xE5, 
         0xFF, 0x1F, 0xBD, 0xE8, 0x04, 0xE0, 0x9D, 0xE5, 0x0C, 0xD0, 0x8D, 0xE2, 0x0F, 0x00, 0xBD, 0xE8, 
         0x01, 0x80, 0x2D, 0xE9, 0x5C, 0x00, 0xA0, 0xE3, 0x00, 0x00, 0x4F, 0xE0, 0x04, 0x00, 0x90, 0xE5, 
@@ -137,7 +138,7 @@ static char *specific_hook (void *org, void *method_obj, void *func) {
      * sub r0, sp, #80      //函数调用前的sp                 |
      * str r0, [sp, #52]    //设置保存的reg.sp为原来的sp     |-> 都是为了堆栈回溯做准备
      * str lr, [sp, #60]    //设置保存的reg.pc为lr           |
-     * sub r1, sp, #64      //2.参数数组
+     * add r1, sp, #64      //2.参数数组
      * ldr r4, =48
      * sub r4, pc, r4
      * ldr r0, [r4, #8]     //1.method ptr
@@ -705,8 +706,106 @@ static int l_log (lua_State *L) {
     return 0;
 }
 
+static int l_get_args (lua_State *L) {
+    int offset = 0;
+    int index = luaL_checkint (L, 1) - 1;
+
+    lua_getglobal (L, "method");
+    MonoMethod *method = (MonoMethod*)lua_touserdata (L, -1);
+    lua_pop (L, 1);
+    if (!method)
+        luaL_error (L, "[luahook] : method is nil!");
+
+    /*非static函数, offset+4, 绕过this指针*/
+    uint32_t iflags;
+    int flag = mono_method_get_flags (method, &iflags);
+    if (!(flag & MONO_METHOD_ATTR_STATIC))
+        offset = 4;
+
+    MonoMethodSignature *sig = mono_method_signature (method);
+    if (index < 0)
+        luaL_error (L, "[luahook] : index must be greater than 0.");
+
+    lua_getglobal (L, "args");
+    void **args = (void**)lua_touserdata (L, -1);
+    lua_pop (L, 1);
+    if (!args)
+        luaL_error (L, "args is nil!");
+
+    void *iter = 0;
+    for (int i = 0; i < index; i++) {
+        MonoType *param_type = mono_signature_get_params (sig, &iter);
+        switch (mono_type_get_type (param_type)) {
+            case MONO_TYPE_U8:
+            case MONO_TYPE_I8:
+            case MONO_TYPE_R8:
+                offset += 8;
+            default:
+                offset += 4;
+        }
+    }
+
+    MonoType *dest_type = mono_signature_get_params (sig, &iter);
+    void *val = &args[offset / 4];
+    if (mono_type_is_reference (dest_type)) {
+        lua_pushlightuserdata (L, *(void**)val);
+    } else {
+        switch (mono_type_get_type (dest_type)) {
+            case MONO_TYPE_VOID:
+                lua_pushnil (L);
+                break;
+            case MONO_TYPE_BOOLEAN:
+                lua_pushboolean (L, *(bool*)val);
+                break;
+            case MONO_TYPE_U2:
+            case MONO_TYPE_CHAR:
+                /*char 用int来表示*/
+                lua_pushinteger (L, *(uint16_t*)val);
+                break;
+            case MONO_TYPE_I1:
+                lua_pushinteger(L, *(int8_t*)val);
+                break;
+            case MONO_TYPE_U1:
+                lua_pushinteger(L, *(uint8_t*)val);
+                break;
+            case MONO_TYPE_I2:
+                lua_pushinteger (L, *(int16_t*)val);
+                break;
+            case MONO_TYPE_I4:
+                lua_pushinteger(L, *(int32_t*)val);
+                break;
+            case MONO_TYPE_VALUETYPE:
+            case MONO_TYPE_U4:
+                lua_pushinteger(L, *(uint32_t*)val);
+                break;
+            case MONO_TYPE_I8:
+            case MONO_TYPE_U8: {
+                memcpy (lua_newuserdata (L, sizeof (int64_t)), val, sizeof (int64_t));
+                break;
+            }
+            case MONO_TYPE_R4:
+                lua_pushnumber(L, *(float*)val);
+                break;
+            case MONO_TYPE_R8:
+                lua_pushnumber(L, *(double*)val);
+                break;
+            case MONO_TYPE_I:
+            case MONO_TYPE_U:
+                luaL_error (L, "donot support the intptr & uintptr.");
+            case MONO_TYPE_MVAR:
+                luaL_error (L, "generic method dont be supported.");
+            case MONO_TYPE_PTR:
+                luaL_error (L, "dont support the ptr type.");
+            default:
+                luaL_error (L, "unknow method args type : 0x%02X", mono_type_get_type (dest_type));
+        }
+    }
+    return 1;
+}
+
 static const luaL_Reg R[] = {
     {"log", l_log},
+    {"get_args", l_get_args},
     {0, 0}
 };
 

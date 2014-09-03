@@ -409,12 +409,12 @@ class XMonoWindow(QtGui.QMainWindow):
     def _recvExecLua(self, packet):
         rsp = xmono_pb2.LuaExecRsp()
         rsp.ParseFromString(packet.data)
-        _luaLog(rsp.level, rsp.message)
+        self._luaLog(rsp.level, rsp.message)
 
     def _recvLuaHook(self, packet):
         rsp = xmono_pb2.LuaHookRsp()
         rsp.ParseFromString(packet.data)
-        _luaLog(rsp.level, rsp.message)
+        self._luaLog(rsp.level, rsp.message)
 
     def _print2Log(self, msg, level):
         """level WARNING INFO DEBUG ERROR"""

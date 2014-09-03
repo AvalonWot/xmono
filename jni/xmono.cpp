@@ -695,6 +695,26 @@ static void init_network () {
     LOGD ("ecmd init over.");
 }
 
+/*获取全局变量里面的method*/
+static MonoMethod *get_global_method (lua_State *L) {
+    lua_getglobal (L, "method");
+    MonoMethod *method = (MonoMethod*)lua_touserdata (L, -1);
+    lua_pop (L, 1);
+    if (!method)
+        luaL_error (L, "[luahook] : method is nil!");
+    return method;
+}
+
+/*获取全局变量里面的args*/
+static void **get_global_args (lua_State *L) {
+    lua_getglobal (L, "args");
+    void **args = (void**)lua_touserdata (L, -1);
+    lua_pop (L, 1);
+    if (!args)
+        luaL_error (L, "[luahook] : args is nil!");
+    return args;
+}
+
 static int l_log (lua_State *L) {
     lua_getglobal (L, "string");
     lua_getfield (L, -1, "format");
@@ -709,13 +729,11 @@ static int l_log (lua_State *L) {
 static int l_get_args (lua_State *L) {
     int offset = 0;
     int index = luaL_checkint (L, 1) - 1;
+    if (index < 0)
+        luaL_error (L, "[luahook] : index must be greater than 0.");
 
-    lua_getglobal (L, "method");
-    MonoMethod *method = (MonoMethod*)lua_touserdata (L, -1);
-    lua_pop (L, 1);
-    if (!method)
-        luaL_error (L, "[luahook] : method is nil!");
-
+    MonoMethod *method = get_global_method (L);
+    void **args = get_global_args (L);
     /*非static函数, offset+4, 绕过this指针*/
     uint32_t iflags;
     int flag = mono_method_get_flags (method, &iflags);
@@ -723,15 +741,6 @@ static int l_get_args (lua_State *L) {
         offset = 4;
 
     MonoMethodSignature *sig = mono_method_signature (method);
-    if (index < 0)
-        luaL_error (L, "[luahook] : index must be greater than 0.");
-
-    lua_getglobal (L, "args");
-    void **args = (void**)lua_touserdata (L, -1);
-    lua_pop (L, 1);
-    if (!args)
-        luaL_error (L, "args is nil!");
-
     void *iter = 0;
     for (int i = 0; i < index; i++) {
         MonoType *param_type = mono_signature_get_params (sig, &iter);
@@ -804,32 +813,102 @@ static int l_get_args (lua_State *L) {
 }
 
 static int l_get_this_pointer (lua_State *L) {
-    lua_getglobal (L, "method");
-    MonoMethod *method = (MonoMethod*)lua_touserdata (L, -1);
-    lua_pop (L, 1);
-    if (!method)
-        luaL_error (L, "[luahook] : method is nil!");
-
+    MonoMethod *method = get_global_method (L);
     /*static函数无this指针*/
     uint32_t iflags;
     int flag = mono_method_get_flags (method, &iflags);
     if (flag & MONO_METHOD_ATTR_STATIC)
         return luaL_error (L, "static method not have this pointer.");
 
-    lua_getglobal (L, "args");
-    void **args = (void**)lua_touserdata (L, -1);
-    lua_pop (L, 1);
-    if (!args)
-        return luaL_error (L, "args is nil!");
-
+    void **args = get_global_args (L);
     lua_pushlightuserdata (L, args[0]);
     return 1;
+}
+
+static int l_set_args (lua_State *L) {
+    if (lua_gettop (L) != 2)
+        return luaL_error (L, "need 2 args. arg1 : index, arg2 : value.");
+    int index = luaL_checkint (L, 1) - 1;
+
+    int offset = 0;
+    MonoMethod *method = get_global_method (L);
+    uint32_t iflags;
+    int flag = mono_method_get_flags (method, &iflags);
+    if (!(flag & MONO_METHOD_ATTR_STATIC))
+        offset = 4;
+
+    MonoMethodSignature *sig = mono_method_signature (method);
+    int arg_num = mono_signature_get_param_count (sig);
+    if (index >= arg_num)
+        return luaL_error (L, "index is greater than method's params count.");
+
+    void *iter = 0;
+    for (int i = 0; i < index; i++) {
+        MonoType *param_type = mono_signature_get_params (sig, &iter);
+        switch (mono_type_get_type (param_type)) {
+            case MONO_TYPE_U8:
+            case MONO_TYPE_I8:
+            case MONO_TYPE_R8:
+                offset += 8;
+            default:
+                offset += 4;
+        }
+    }
+    void **args = get_global_args (L);
+    MonoType *dest_type = mono_signature_get_params (sig, &iter);
+    void *val = &args[offset / 4];
+    if (mono_type_is_reference (dest_type)) {
+        *(void**)val = lua_touserdata (L, 2);
+    } else {
+        switch (mono_type_get_type (dest_type)) {
+            case MONO_TYPE_BOOLEAN:
+                *(bool*)val = lua_toboolean (L, 2);
+                break;
+            case MONO_TYPE_U2:
+            case MONO_TYPE_CHAR:
+            case MONO_TYPE_U1:
+            case MONO_TYPE_VALUETYPE:
+            case MONO_TYPE_U4:
+                *(int32_t*)val = luaL_checkint (L, 2);
+                break;
+            case MONO_TYPE_I1:
+            case MONO_TYPE_I2:
+            case MONO_TYPE_I4:
+                *(uint32_t*)val = luaL_checkunsigned (L, 2);
+                break;
+            case MONO_TYPE_I8:
+            case MONO_TYPE_U8: {
+                void *p = lua_touserdata (L, 2);
+                if (!p)
+                    return luaL_error (L, "64 bit number is nil.");
+                memcpy (val, p, sizeof (int64_t));
+                break;
+            }
+            case MONO_TYPE_R4:
+                *(float*)val = (float)lua_tonumber (L, 2);
+                break;
+            case MONO_TYPE_R8:
+                *(double*)val = lua_tonumber (L, 2);
+                break;
+            case MONO_TYPE_I:
+            case MONO_TYPE_U:
+                luaL_error (L, "donot support the intptr & uintptr.");
+            case MONO_TYPE_MVAR:
+                luaL_error (L, "generic method dont be supported.");
+            case MONO_TYPE_PTR:
+                luaL_error (L, "dont support the ptr type.");
+            default:
+                luaL_error (L, "unknow method args type : 0x%02X", mono_type_get_type (dest_type));
+        }
+    }
+    return 0;
 }
 
 static const luaL_Reg R[] = {
     {"log", l_log},
     {"get_args", l_get_args},
     {"get_this_pointer", l_get_this_pointer},
+    {"set_args", l_set_args},
     {0, 0}
 };
 

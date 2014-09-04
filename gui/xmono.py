@@ -5,7 +5,7 @@
 
 from PyQt4 import QtCore, QtGui
 import xmonoUI
-import cil, stack_trace
+import cil, stack_trace, lua_hook, args_modify
 import ecmd
 import zlib
 import re
@@ -58,6 +58,8 @@ class XMonoWindow(QtGui.QMainWindow):
         self.ui.setupUi(self)
         self.cilWindow = cil.CilWindow(self)
         self.stackTraceWindow = stack_trace.StackTraceWindow(self)
+        self.luaHookWindow = lua_hook.LuaHookWindow(self)
+        self.argsModifyWindow = args_modify.ArgsModifyWindow(self)
         self.log = Log()
         self.log.regHandle(self._print2Log)
         self._ecmd = ecmd.Ecmd(self)
@@ -87,6 +89,8 @@ class XMonoWindow(QtGui.QMainWindow):
         self.showStackWinAct =  QtGui.QAction(icon, u"显示堆栈回溯窗口", self)
 
         self.stackTraceAct = QtGui.QAction(u"堆栈跟踪", self)
+        self.luaHookAct = QtGui.QAction(u"函数Hook", self)
+        self.argsModifyAct = QtGui.QAction(u"函数简单实参修改", self)
 
     def _createMenus(self):
         menuBar = self.menuBar()
@@ -104,6 +108,8 @@ class XMonoWindow(QtGui.QMainWindow):
         #这里创建func list窗口的右键菜单, 如果代码增长, 考虑移出到单独函数
         self.flRMenu = QtGui.QMenu(self.ui.funcCntTableWidget)
         self.flRMenu.addAction(self.stackTraceAct)
+        self.flRMenu.addAction(self.luaHookAct)
+        self.flRMenu.addAction(self.argsModifyAct)
         self.ui.funcCntTableWidget.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
 
     def _createToolBar(self):
@@ -132,6 +138,8 @@ class XMonoWindow(QtGui.QMainWindow):
         _actTriggered(self.stopTraceAct, self._stopTrace)
         _actTriggered(self.stackTraceAct, self._stackTraceMethod)
         _actTriggered(self.showStackWinAct, self.stackTraceWindow.show)
+        _actTriggered(self.luaHookAct, self._showLuaHookWin)
+        _actTriggered(self.argsModifyAct, self._showArgsModifyWin)
 
         self.ui.filterLineEdit.returnPressed.connect(self._filterOutRequest)
         self.ui.tabWidget.currentChanged.connect(self._traceCntShow)
@@ -142,6 +150,8 @@ class XMonoWindow(QtGui.QMainWindow):
         self.stackTraceWindow.deleteMethod.connect(self._disTraceMethod)
         self.stackTraceWindow.selectMethod.connect(self._disasmMethod)
         self.cilWindow.compiled.connect(self._replaceMethod)
+        self.luaHookWindow.hookWithLua.connect(self._luaHook)
+        self.argsModifyWindow.hookWithLua.connect(self._luaHook)
 
     def _showFuncCntRMenu(self, pos):
         p = self.ui.funcCntTableWidget.mapToGlobal(pos)
@@ -275,16 +285,10 @@ class XMonoWindow(QtGui.QMainWindow):
         self._disasmMethod(str(s))
 
     def _disasmMethod(self, s):
-        s = str(s)
-        p = "\[(.*)\].*\[(.*)\]"
-        r = re.search(p, s)
-        if r == None:
-            self.log.e(u"无法从{0}中提取需要的信息".format(s))
-            return
-        g = r.groups()
+        name, sig, token = self._reMethodSig(s)
         req = xmono_pb2.DisasmMethodReq()
-        req.method_token = int(g[1], 16)
-        req.image_name = g[0]
+        req.method_token = int(token, 16)
+        req.image_name = name
         pkg = ecmd.EcmdPacket(XMONO_ID_DISASM_METHOD_REP, req.SerializeToString())
         self._ecmd.sendPacket(pkg)
 
@@ -325,17 +329,21 @@ class XMonoWindow(QtGui.QMainWindow):
     def _disTraceMethod(self, s):
         self._traceMethod(s, False)
 
-    def _traceMethod(self, s, sw):
+    def _reMethodSig(self, s):
         s = str(s)
-        p = "\[(.*)\].*\[(.*)\]"
+        p = "\[(.*)\](.*)\[(.*)\]"
         r = re.search(p, s)
         if r == None:
             self.log.e(u"无法从{0}中提取需要的信息".format(s))
             return
         g = r.groups()
+        return g[0], g[1], g[2]
+
+    def _traceMethod(self, s, sw):
+        name, sig, token = reMethodSig(s)
         req = xmono_pb2.StackTraceReq()
-        req.image_name = g[0]
-        req.method_token = int(g[1], 16)
+        req.image_name = name
+        req.method_token = int(token, 16)
         if sw:
             pck_id = XMONO_ID_STACK_TRACE_REP
         else:
@@ -355,12 +363,26 @@ class XMonoWindow(QtGui.QMainWindow):
         self._ecmd.sendPacket(pkg)
 
     def _luaHook(self, image_name, method_token, code):
+        image_name = str(image_name)
+        code = str(code)
         req = xmono_pb2.LuaHookReq()
+        req.disable = False
         req.image_name = image_name
         req.method_token = method_token
         req.lua_code = code
         pkg = ecmd.EcmdPacket(XMONO_ID_LUA_HOOK_REP, req.SerializeToString())
         self._ecmd.sendPacket(pkg)
+
+    def _showLuaHookWin(self):
+        s = self._getFuncCntItemStr()
+        if s == None:
+            return
+        name, sig, token = self._reMethodSig(s)
+        self.luaHookWindow.setMethodInfo(name, int(token, 16))
+        self.luaHookWindow.show()
+
+    def _showArgsModifyWin(self):
+        pass
 
     def _recvDisasmMethod(self, packet):
         rsp = xmono_pb2.DisasmMethodRsp()

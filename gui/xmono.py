@@ -152,6 +152,7 @@ class XMonoWindow(QtGui.QMainWindow):
         self.cilWindow.compiled.connect(self._replaceMethod)
         self.luaHookWindow.hookWithLua.connect(self._luaHook)
         self.argsModifyWindow.hookWithLua.connect(self._luaHook)
+        self.ui.cntPushButton.clicked.connect(self._filterOutRequest)
 
     def _showFuncCntRMenu(self, pos):
         p = self.ui.funcCntTableWidget.mapToGlobal(pos)
@@ -218,8 +219,15 @@ class XMonoWindow(QtGui.QMainWindow):
     def _funcTraceCntFilteShow(self):
         d = {}
         f_k = self._traceLogFilterOut(self._traceFuncCntDict.keys())
+        mint = self.ui.minSpinBox.value()
+        maxt = self.ui.maxSpinBox.value()
+        if maxt < mint:
+            maxt = mint
         for k in f_k:
-            d[k] = self._traceFuncCntDict[k]
+            #过滤次数
+            t = self._traceFuncCntDict[k]
+            if t[0] >= mint and t[0] <= maxt:
+                d[k] = t
         self._traceCntShow(d)
 
     def _tabChange(self, index):

@@ -12,6 +12,7 @@ import re, struct
 class CilWindow(QtGui.QMainWindow):
     """cil主类"""
     compiledSig = QtCore.pyqtSignal(str, int, tuple, name = 'compiled')
+    findMethodSig = QtCore.pyqtSignal(str, int, name = 'findMethod')
     def __init__(self, parent=None):
         QtGui.QMainWindow.__init__(self, parent)
         self.ui = cilUI.Ui_CilWindow()
@@ -33,6 +34,36 @@ class CilWindow(QtGui.QMainWindow):
 
     def _slotConnects(self):
         self.compileAct.triggered.connect(self._compile)
+
+    def keyPressEvent(self, event):
+        if not self.ui.ilTextBrowser.hasFocus():
+            return
+        if event.key() == QtCore.Qt.Key_F2:
+            cur = self.ui.ilTextBrowser.textCursor()
+            i = cur.position()
+            text = str(self.ui.ilTextBrowser.toPlainText())
+            ri = text.find('\n', i) + 1
+            if ri == -1:
+                ri = len(text)
+            li = text.rfind('\n', 0, i)
+            if li == -1:
+                li = 0
+            line = text[li:ri]
+            ma = re.search("\[([0-9A-Fa-f]{8})\]", line)
+            if ma == None:
+                return
+            token = int(ma.groups()[0], 16)
+            ty = token >> 24
+            print ty
+            if ty != 6 and ty != 0xA:
+                return
+            ma = re.search("\[(.*)\].*\[(.*)\]", text.split('\n')[0])
+            if ma == None:
+                msg_box = QtGui.QMessageBox()
+                msg_box.setText(u"缺乏第一行method信息, 无法token得知所在模块名")
+                msg_box.exec_()
+            iname = ma.groups()[0]
+            self.findMethodSig.emit(iname, token)
 
     def showCil(self, code):
         self.show()

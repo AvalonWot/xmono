@@ -160,6 +160,7 @@ class XMonoWindow(QtGui.QMainWindow):
         self.luaHookWindow.hookWithLua.connect(self._luaHook)
         self.argsModifyWindow.hookWithLua.connect(self._luaHook)
         self.ui.cntPushButton.clicked.connect(self._filterOutRequest)
+        self.cilWindow.findMethod.connect(self._disasmMethod)
 
     def _showFuncCntRMenu(self, pos):
         p = self.ui.funcCntTableWidget.mapToGlobal(pos)
@@ -312,13 +313,13 @@ class XMonoWindow(QtGui.QMainWindow):
         if item.column() != 0:
             item = self.ui.funcCntTableWidget.item(item.row(), 1)
         s = item.text()
-        self._disasmMethod(str(s))
+        name, sig, token = self._reMethodSig(str(s))
+        self._disasmMethod(name, int(token, 16))
 
-    def _disasmMethod(self, s):
-        name, sig, token = self._reMethodSig(s)
+    def _disasmMethod(self, iname, token):
         req = xmono_pb2.DisasmMethodReq()
-        req.method_token = int(token, 16)
-        req.image_name = name
+        req.method_token = token
+        req.image_name = str(iname)
         pkg = ecmd.EcmdPacket(XMONO_ID_DISASM_METHOD_REP, req.SerializeToString())
         self._ecmd.sendPacket(pkg)
 

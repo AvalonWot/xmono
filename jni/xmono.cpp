@@ -89,6 +89,8 @@ typedef void (*CommonHookFunc)(MonoMethod*, void**, ArmRegs*);
 /*全局变量*/
 static pthread_mutex_t hooked_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::map<MonoMethod*, HookInfo*> hooked_method_dict;
+static pthread_mutex_t addon_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
+std::map<MonoMethod*, bool> addon_hook_dict;
 static pthread_mutex_t replace_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::map<MonoMethod*, bool> replace_method_dict;
 static pthread_mutex_t lua_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -168,106 +170,6 @@ static char *specific_hook (void *org, void *method_obj, void *func) {
     return p;
 }
 
-static pthread_key_t t_lua_key;
-static pthread_once_t t_lua_once = PTHREAD_ONCE_INIT;
-
-static void t_lua_free (void *p) {
-    lua_State *L = (lua_State*)p;
-    lua_close (L);
-}
-
-static void make_key() {
-    (void) pthread_key_create (&t_lua_key, t_lua_free);
-}
-
-static void lua_hook (MonoMethod *method, void *args[], ArmRegs *regs) {
-    lua_State *L = 0;
-    pthread_once (&t_lua_once, make_key);
-    if ((L = (lua_State*)pthread_getspecific (t_lua_key)) == 0) {
-        L = lua_env_new ();
-        pthread_setspecific (t_lua_key, L);
-        if (L == 0) {
-            xmono::LuaExecRsp rsp;
-            rsp.set_level (xmono::err);
-            rsp.set_message ("lua_State can not be create.");
-            std::string out;
-            rsp.SerializeToString (&out);
-            ecmd_send (XMONO_ID_LUA_HOOK_RSP, (uint8_t const*)out.c_str (), out.size ());
-            return;
-        }
-    }
-    pthread_mutex_lock (&lua_hook_mutex);
-    char const *lua_codes = 0;
-    if (lua_hook_dict.find (method) != lua_hook_dict.end ())
-        lua_codes = lua_hook_dict[method];
-    pthread_mutex_unlock (&lua_hook_mutex);
-
-    lua_pushlightuserdata (L, method);
-    lua_setglobal (L, "method");
-    lua_pushlightuserdata (L, (void*)args);
-    lua_setglobal (L, "args");
-    if (lua_codes && !luaL_dostring (L, lua_codes)) {
-        lua_settop(L, 0);
-        return;
-    }
-
-    xmono::LuaExecRsp rsp;
-    rsp.set_level (xmono::err);
-    rsp.set_message (lua_tostring (L, -1));
-    std::string out;
-    rsp.SerializeToString (&out);
-    ecmd_send (XMONO_ID_LUA_HOOK_RSP, (uint8_t const*)out.c_str (), out.size ());
-    lua_settop(L, 0);
-    return;
-}
-
-static int walk_stack (MonoDomain *domain, MonoContext *ctx, MonoJitInfo *jit_info, void *user_data) {
-    MemWriter *writer = (MemWriter*)user_data;
-    MonoMethod *method =mono_jit_info_get_method (jit_info);
-    if (!method) {
-        writer->sprintf("%s", "jit_info no method!");
-        return 0;
-    }
-    char const *m = get_method_image_name (method);
-    m = m ? m : "NO_IMAGE_NAME";
-    char const *n = mono_method_full_name (method, 1);
-    if (n) {
-        writer->sprintf ("[%s] %s [%08X]\n", m, n, mono_method_get_token (method));
-        g_free (n);
-    } else {
-        writer->sprintf ("[%s] %s [%08X]\n", m, "NO_METHOD_NAME", mono_method_get_token (method));
-    }
-    return 0; /*一直walk, 直到栈帧尽头*/
-}
-
-void stack_trace (MonoMethod *method, void *args[], ArmRegs *regs) {
-    LOGD ("stack_trace be call!");
-    MonoContext ctx;
-    ctx.eip = regs->pc;
-    ctx.esp = regs->sp;
-    ctx.ebp = regs->r11;
-    memcpy (ctx.regs, regs, 4 * 16);
-    MemWriter writer;
-    /*因为当前被跟踪的函数还没被调用(当前在specific_trampo中), 所以这里手动写入当前函数的跟踪结构*/
-    char const *m = get_method_image_name (method);
-    m = m ? m : "NO_IMAGE_NAME";
-    char const *n = mono_method_full_name (method, 1);
-    if (n) {
-        writer.sprintf ("[%s]%s[%08X]\n", m, n, mono_method_get_token (method));
-        g_free (n);
-    } else {
-        writer.sprintf ("[%s]%s[%08X]\n", m, "NO_METHOD_NAME", mono_method_get_token (method));
-    }
-    mono_walk_stack (mono_domain_get (), 0, &ctx, walk_stack, &writer);
-
-    xmono::StackTraceRsp rsp;
-    rsp.set_err (true);
-    rsp.set_stack (std::string ((char*)writer.getBuffPtr (), writer.getBuffSize ()));
-    std::string out;
-    rsp.SerializeToString (&out);
-    ecmd_send (XMONO_ID_STACK_TRACE_RSP, (uint8_t const*)out.c_str (), out.size ());
-}
-
 /*反汇编method的IL*/
 static char const *disil_method (MonoMethod *method) {
     MonoMethodHeader *header = mono_method_get_header (method);
@@ -329,6 +231,112 @@ static void func_trace (MonoMethod *method, void *args[], ArmRegs *regs) {
     return;
 }
 
+static int walk_stack (MonoDomain *domain, MonoContext *ctx, MonoJitInfo *jit_info, void *user_data) {
+    MemWriter *writer = (MemWriter*)user_data;
+    MonoMethod *method =mono_jit_info_get_method (jit_info);
+    if (!method) {
+        writer->sprintf("%s", "jit_info no method!");
+        return 0;
+    }
+    char const *m = get_method_image_name (method);
+    m = m ? m : "NO_IMAGE_NAME";
+    char const *n = mono_method_full_name (method, 1);
+    if (n) {
+        writer->sprintf ("[%s] %s [%08X]\n", m, n, mono_method_get_token (method));
+        g_free (n);
+    } else {
+        writer->sprintf ("[%s] %s [%08X]\n", m, "NO_METHOD_NAME", mono_method_get_token (method));
+    }
+    return 0; /*一直walk, 直到栈帧尽头*/
+}
+
+void stack_trace (MonoMethod *method, void *args[], ArmRegs *regs) {
+    LOGD ("stack_trace be call!");
+    /*默认先call func_trace, 实现基本的函数跟踪不被遗漏*/
+    func_trace (method, args, regs);
+    MonoContext ctx;
+    ctx.eip = regs->pc;
+    ctx.esp = regs->sp;
+    ctx.ebp = regs->r11;
+    memcpy (ctx.regs, regs, 4 * 16);
+    MemWriter writer;
+    /*因为当前被跟踪的函数还没被调用(当前在specific_trampo中), 所以这里手动写入当前函数的跟踪结构*/
+    char const *m = get_method_image_name (method);
+    m = m ? m : "NO_IMAGE_NAME";
+    char const *n = mono_method_full_name (method, 1);
+    if (n) {
+        writer.sprintf ("[%s]%s[%08X]\n", m, n, mono_method_get_token (method));
+        g_free (n);
+    } else {
+        writer.sprintf ("[%s]%s[%08X]\n", m, "NO_METHOD_NAME", mono_method_get_token (method));
+    }
+    mono_walk_stack (mono_domain_get (), 0, &ctx, walk_stack, &writer);
+
+    xmono::StackTraceRsp rsp;
+    rsp.set_err (true);
+    rsp.set_stack (std::string ((char*)writer.getBuffPtr (), writer.getBuffSize ()));
+    std::string out;
+    rsp.SerializeToString (&out);
+    ecmd_send (XMONO_ID_STACK_TRACE_RSP, (uint8_t const*)out.c_str (), out.size ());
+}
+
+static pthread_key_t t_lua_key;
+static pthread_once_t t_lua_once = PTHREAD_ONCE_INIT;
+
+static void t_lua_free (void *p) {
+    lua_State *L = (lua_State*)p;
+    lua_close (L);
+}
+
+static void make_key() {
+    (void) pthread_key_create (&t_lua_key, t_lua_free);
+}
+
+static void lua_hook (MonoMethod *method, void *args[], ArmRegs *regs) {
+    /*默认先call func_trace, 实现基本的函数跟踪不被遗漏*/
+    func_trace (method, args, regs);
+    lua_State *L = 0;
+    pthread_once (&t_lua_once, make_key);
+    if ((L = (lua_State*)pthread_getspecific (t_lua_key)) == 0) {
+        L = lua_env_new ();
+        pthread_setspecific (t_lua_key, L);
+        if (L == 0) {
+            xmono::LuaExecRsp rsp;
+            rsp.set_level (xmono::err);
+            rsp.set_message ("lua_State can not be create.");
+            std::string out;
+            rsp.SerializeToString (&out);
+            ecmd_send (XMONO_ID_LUA_HOOK_RSP, (uint8_t const*)out.c_str (), out.size ());
+            return;
+        }
+    }
+    pthread_mutex_lock (&lua_hook_mutex);
+    char const *lua_codes = 0;
+    if (lua_hook_dict.find (method) != lua_hook_dict.end ())
+        lua_codes = lua_hook_dict[method];
+    pthread_mutex_unlock (&lua_hook_mutex);
+
+    lua_pushlightuserdata (L, method);
+    lua_setglobal (L, "method");
+    lua_pushlightuserdata (L, (void*)args);
+    lua_setglobal (L, "args");
+    if (lua_codes && !luaL_dostring (L, lua_codes)) {
+        lua_settop(L, 0);
+        return;
+    }
+
+    xmono::LuaExecRsp rsp;
+    rsp.set_level (xmono::err);
+    rsp.set_message (lua_tostring (L, -1));
+    std::string out;
+    rsp.SerializeToString (&out);
+    ecmd_send (XMONO_ID_LUA_HOOK_RSP, (uint8_t const*)out.c_str (), out.size ());
+    lua_settop(L, 0);
+    return;
+}
+
+/*Fixme : 应该建立一个统一的hook函数, 其他hook函数直接注册到该函数, 这样可以形成一个hook链条*/
+
 /*监控需要hook的函数*/
 static void profile_jit_result (MonoProfiler *prof, MonoMethod *method, MonoJitInfo* jinfo, int result) {
     if (result == MONO_PROFILE_FAILED) return;
@@ -348,17 +356,24 @@ static void profile_jit_result (MonoProfiler *prof, MonoMethod *method, MonoJitI
     if (*(uint32_t*)p != 0xE1A0C00D)
          LOGD ("exception func : %s , %p", mono_method_get_name (method), p);
 
-    /*TODO : 增加可配置的image和函数列表*/
-    if (strcmp (get_method_image_name (method), "Assembly-CSharp") != 0) return;
-    if (strcmp (mono_method_get_name (method), ".ctor") == 0) return;
-    if (strcmp (mono_method_get_name (method), ".cctor") == 0) return;
-    if (strcmp (mono_method_get_name (method), "set") == 0) return;
-    if (strcmp (mono_method_get_name (method), "get") == 0) return;
-    if (strcmp (mono_method_get_name (method), "Update") == 0) return;
-    if (strcmp (mono_method_get_name (method), "LateUpdate") == 0) return;
-    if (strcmp (mono_method_get_name (method), "OnGUI") == 0) return;
+    bool all_pass = false;
+    pthread_mutex_lock (&addon_hook_mutex);
+    if (addon_hook_dict.find (method) != addon_hook_dict.end ())
+        all_pass = true;
+    pthread_mutex_unlock (&addon_hook_mutex);
 
-    /*TODO : 需要一个容器来存储还未编译, 但又想hook的函数*/
+    /*TODO : 增加可配置的image和函数列表*/
+    /*Fixme : 这里应该记录所有函数, hook配置表允许的函数*/
+    if (!all_pass) {
+        if (strcmp (get_method_image_name (method), "Assembly-CSharp") != 0) return;
+        if (strcmp (mono_method_get_name (method), ".ctor") == 0) return;
+        if (strcmp (mono_method_get_name (method), ".cctor") == 0) return;
+        if (strcmp (mono_method_get_name (method), "set") == 0) return;
+        if (strcmp (mono_method_get_name (method), "get") == 0) return;
+        if (strcmp (mono_method_get_name (method), "Update") == 0) return;
+        if (strcmp (mono_method_get_name (method), "LateUpdate") == 0) return;
+        if (strcmp (mono_method_get_name (method), "OnGUI") == 0) return;
+    }
 
     bool donthook = false;
     pthread_mutex_lock (&replace_mutex);
@@ -411,6 +426,28 @@ static void list_assemblys (Package *pkg) {
     return;
 }
 
+/*这个函数名真销魂*/
+static bool hook_if_method_not_hook (MonoMethod *method) {
+    pthread_mutex_lock (&hooked_mutex);
+    bool is_hooked = hooked_method_dict.find (method) != hooked_method_dict.end ();
+    pthread_mutex_unlock (&hooked_mutex);
+    if (is_hooked)
+        return true;
+
+    pthread_mutex_lock (&addon_hook_mutex);
+    addon_hook_dict[method] = true;
+    pthread_mutex_unlock (&addon_hook_mutex);
+    /*Fixme : 这里直接使用了0 号domain, 一般unity游戏中只有这一个, 但不能保证特殊情况*/
+    MonoThread *thred = mono_thread_attach (mono_domain_get_by_id (0));
+    mono_compile_method (method);
+    mono_thread_detach (thred);
+
+    pthread_mutex_lock (&hooked_mutex);
+    is_hooked = hooked_method_dict.find (method) != hooked_method_dict.end ();
+    pthread_mutex_unlock (&hooked_mutex);
+    return is_hooked;
+}
+
 static void unset_stack_trace (Package *pkg) {
     xmono::UnStackTraceReq req;
     std::string str((char*)pkg->body, pkg->all_len - sizeof (Package));
@@ -447,18 +484,17 @@ static void set_stack_trace (Package *pkg) {
             rsp.set_err_str (helper_last_err ());
             break;
         }
-        pthread_mutex_lock (&hooked_mutex);
-        if (hooked_method_dict.find (method) != hooked_method_dict.end ()) {
-            HookInfo *info = hooked_method_dict[method];
-            SpecificHook *shook = (SpecificHook*)info->specific_hook;
-            shook->trace_func = (void*)stack_trace;
-            rsp.set_err (true);
-        } else {
-            /*Fixme : 这里不应该返回错误, 而是加入一个队列当函数被编译时 hook后直接替换*/
+        if (!hook_if_method_not_hook (method)) {
             rsp.set_err (false);
-            rsp.set_err_str ("can not find method's hook info.");
+            rsp.set_err_str ("this method canot be hook.");
+            break;
         }
+        pthread_mutex_lock (&hooked_mutex);
+        HookInfo *info = hooked_method_dict[method];
+        SpecificHook *shook = (SpecificHook*)info->specific_hook;
+        shook->trace_func = (void*)stack_trace;
         pthread_mutex_unlock (&hooked_mutex);
+        rsp.set_err (true);
     }while (0);
     if (rsp.err ()) return;   /*正常设置stack_trace的情况下 不用通知客户端*/
     std::string out;
@@ -486,6 +522,11 @@ static void replace_method (Package *pkg) {
     if (!method) {
         rsp.set_err (false);
         rsp.set_msg (helper_last_err ());
+        goto replace_method_end;
+    }
+    if (!hook_if_method_not_hook (method)) {
+        rsp.set_err (false);
+        rsp.set_msg ("this method can not be hook.");
         goto replace_method_end;
     }
     domain = mono_domain_get_by_id (req.domain_id ());
@@ -645,26 +686,26 @@ static void hook_with_lua (Package *pkg) {
             rsp.set_message ("lua_code must not be nil.");
             break;
         }
+        if (!hook_if_method_not_hook (method)) {
+            rsp.set_level (xmono::err);
+            rsp.set_message ("this method can not be hook.");
+            break;
+        }
+
         char *p = 0;
         if (!req.disable ())
             p = new char[req.lua_code ().size () + 1];
         memcpy (p, req.lua_code ().c_str (), req.lua_code ().size () + 1);
+
+        CommonHookFunc func = 0;
+        if (req.disable ())
+            func = func_trace;
+        else
+            func = lua_hook;
         pthread_mutex_lock (&hooked_mutex);
-        if (hooked_method_dict.find (method) != hooked_method_dict.end ()) {
-            CommonHookFunc func = 0;
-            if (req.disable ())
-                func = func_trace;
-            else
-                func = lua_hook;
-            memcpy (hooked_method_dict[method]->specific_hook, &func, 4);
-            rsp.set_level (xmono::info);
-            rsp.set_message ("hook_with_lua completion.");
-        } else {
-            // Fixme : 对于未hook的函数的处理
-            rsp.set_level (xmono::err);
-            rsp.set_message ("method dont be hook.");
-        }
+        memcpy (hooked_method_dict[method]->specific_hook, &func, 4);
         pthread_mutex_unlock (&hooked_mutex);
+
         pthread_mutex_lock (&lua_hook_mutex);
         if (lua_hook_dict.find (method) != lua_hook_dict.end ())
             delete[] lua_hook_dict[method];
@@ -673,6 +714,9 @@ static void hook_with_lua (Package *pkg) {
         else
             lua_hook_dict[method] = p;
         pthread_mutex_unlock (&lua_hook_mutex);
+
+        rsp.set_level (xmono::info);
+        rsp.set_message ("hook_with_lua completion.");
     } while (0);
     std::string out;
     rsp.SerializeToString (&out);

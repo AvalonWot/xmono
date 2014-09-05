@@ -85,6 +85,9 @@ class XMonoWindow(QtGui.QMainWindow):
         icon = QtGui.QIcon(":/icons/res/icons/stop.png")
         self.stopTraceAct = QtGui.QAction(icon, u"停止记录", self)
 
+        icon = QtGui.QIcon(":/icons/res/icons/clear.png")
+        self.clearTraceAct = QtGui.QAction(icon, u"清除记录", self)
+
         icon = QtGui.QIcon(":/icons/res/icons/trace_win.png")
         self.showStackWinAct =  QtGui.QAction(icon, u"显示堆栈回溯窗口", self)
 
@@ -101,6 +104,7 @@ class XMonoWindow(QtGui.QMainWindow):
         traceMenu = menuBar.addMenu(u"记录")
         traceMenu.addAction(self.startTraceAct)
         traceMenu.addAction(self.stopTraceAct)
+        traceMenu.addAction(self.clearTraceAct)
 
         subwinMenu = menuBar.addMenu(u"窗口")
         subwinMenu.addAction(self.showStackWinAct)
@@ -119,6 +123,7 @@ class XMonoWindow(QtGui.QMainWindow):
         traceToolBar = self.addToolBar(u"Trace")
         traceToolBar.addAction(self.startTraceAct)
         traceToolBar.addAction(self.stopTraceAct)
+        traceToolBar.addAction(self.clearTraceAct)
 
         subwinToolBar = self.addToolBar(u"Windows")
         subwinToolBar.addAction(self.showStackWinAct)
@@ -128,6 +133,7 @@ class XMonoWindow(QtGui.QMainWindow):
         self.connectAct.setEnabled(True)
         self.startTraceAct.setEnabled(False)
         self.stopTraceAct.setEnabled(False)
+        self.clearTraceAct.setEnabled(False)
         self.cilWindow.WinInit()
         self.stackTraceWindow.WinInit()
 
@@ -136,6 +142,7 @@ class XMonoWindow(QtGui.QMainWindow):
         _actTriggered(self.connectAct, self._connect)
         _actTriggered(self.startTraceAct, self._startTrace)
         _actTriggered(self.stopTraceAct, self._stopTrace)
+        _actTriggered(self.clearTraceAct, self._clearTrace)
         _actTriggered(self.stackTraceAct, self._stackTraceMethod)
         _actTriggered(self.showStackWinAct, self.stackTraceWindow.show)
         _actTriggered(self.luaHookAct, self._showLuaHookWin)
@@ -194,6 +201,7 @@ class XMonoWindow(QtGui.QMainWindow):
         self.ui.funcGroupBox.setTitle (u"正在跟踪...")
         self.startTraceAct.setEnabled(False)
         self.stopTraceAct.setEnabled(True)
+        self.clearTraceAct.setEnabled(False)
         p = ecmd.EcmdPacket(XMONO_ID_FUNC_TRACE_START, "")
         self._ecmd.sendPacket(p)
         self.log.d(u"send packet id = {0}".format(p.id));
@@ -201,10 +209,17 @@ class XMonoWindow(QtGui.QMainWindow):
     def _stopTrace(self):
         self.startTraceAct.setEnabled(True)
         self.stopTraceAct.setEnabled(False)
+        self.clearTraceAct.setEnabled(True)
         p = ecmd.EcmdPacket(XMONO_ID_FUNC_TRACE_STOP, "")
         self._ecmd.sendPacket(p)
         self.log.d(u"send packet id = {0}".format(p.id));
         self.ui.funcGroupBox.setTitle (u"暂无跟踪结果...")
+
+    def _clearTrace(self):
+        self.clearTraceAct.setEnabled(False)
+        self._traceFuncCntDict.clear()
+        self._clearFuncCntTableWidget()
+        self.ui.funcGroupBox.setTitle (u"函数 : 0")
 
     def _traceLogFilterOut(self, data):
         flr = str(self.ui.filterLineEdit.text())

@@ -196,7 +196,6 @@ class XMonoWindow(QtGui.QMainWindow):
         self.ui.cmdLineEdit.clear()
 
     def _startTrace(self):
-        self._traceFuncCntDict.clear()
         self._clearFuncCntTableWidget()
         self.ui.funcGroupBox.setTitle (u"正在跟踪...")
         self.startTraceAct.setEnabled(False)
@@ -289,9 +288,17 @@ class XMonoWindow(QtGui.QMainWindow):
         w.sortItems(0, QtCore.Qt.AscendingOrder)
 
     def _traceCntHandle(self, l):
+        first = len(self._traceFuncCntDict) == 0
+        d = {}
         for i in l:
             item = i.split('|')
-            self._traceFuncCntDict[item[0]] = (int(item[1]), int(item[2]))
+            if first:
+                d[item[0]] = (int(item[1]), int(item[2]))
+                continue
+            if item[0] in self._traceFuncCntDict.keys():
+                d[item[0]] = (int(item[1]), int(item[2]))
+        self._traceFuncCntDict.clear()
+        self._traceFuncCntDict.update(d)
         self._funcTraceCntFilteShow()
 
     def _recvFuncTrace(self, packet):

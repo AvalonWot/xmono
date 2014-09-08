@@ -313,7 +313,7 @@ class XMonoWindow(QtGui.QMainWindow):
         if item.column() != 0:
             item = self.ui.funcCntTableWidget.item(item.row(), 1)
         s = item.text()
-        name, sig, token = self._reMethodSig(str(s))
+        name, sig, token = self._matchMethodSig(str(s))
         self._disasmMethod(name, int(token, 16))
 
     def _disasmMethod(self, iname, token):
@@ -360,9 +360,9 @@ class XMonoWindow(QtGui.QMainWindow):
     def _disTraceMethod(self, s):
         self._traceMethod(s, False)
 
-    def _reMethodSig(self, s):
+    def _matchMethodSig(self, s):
         s = str(s)
-        p = "\[(.*)\](.*)\[(.*)\]"
+        p = "\[(.+?)\](.*)\[([0-9A-Fa-f]{8})\]"
         r = re.search(p, s)
         if r == None:
             self.log.e(u"无法从{0}中提取需要的信息".format(s))
@@ -371,7 +371,7 @@ class XMonoWindow(QtGui.QMainWindow):
         return g[0], g[1], g[2]
 
     def _traceMethod(self, s, sw):
-        name, sig, token = self._reMethodSig(s)
+        name, sig, token = self._matchMethodSig(s)
         req = xmono_pb2.StackTraceReq()
         req.image_name = name
         req.method_token = int(token, 16)
@@ -408,7 +408,7 @@ class XMonoWindow(QtGui.QMainWindow):
         s = self._getFuncCntItemStr()
         if s == None:
             return
-        name, sig, token = self._reMethodSig(s)
+        name, sig, token = self._matchMethodSig(s)
         self.luaHookWindow.setMethodInfo(name, int(token, 16))
         self.luaHookWindow.show()
 

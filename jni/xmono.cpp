@@ -4,7 +4,6 @@ author: skeu
 description: hook com.tencent.Alice的数据加密点, 以获取明文数据
 */
 
-
 #include <stdlib.h>
 #include <deque>
 #include <map>
@@ -35,37 +34,23 @@ description: hook com.tencent.Alice的数据加密点, 以获取明文数据
 #define LOGD(fmt, args...)  __android_log_print(ANDROID_LOG_DEBUG,LOG_TAG, fmt, ##args)
 #define LOGE(fmt, args...)  __android_log_print(ANDROID_LOG_ERROR,LOG_TAG, fmt, ##args)
 
-/*前置函数声明*/
-static lua_State *lua_env_new ();
-
 #define CMDID(a,b,c) a = c,
 enum CmdId {
     #include "const_cmdid.def"
 };
 
-struct _MonoProfiler {
-    int *nul;
-};
-typedef struct _MonoProfiler MonoProfiler;
+/*前置自定义类声明*/
+struct HookFuncs;
+struct ArmRegs;
 
-struct _SpecificHook {
-    void *trace_func;   /*记录类函数指针*/
-    void *old_func;     /*specific_hook 退出时将跳往的地址*/
-    void *method;       /*MonoMethod*/
-};/*specific_hook 的shellcode将不会出现在这个结构体中*/
-typedef struct _SpecificHook SpecificHook;
+/*前置函数声明*/
+static lua_State *lua_env_new ();
+static void common_hook (HookFuncs *hooks, MonoMethod *method, void *args[], ArmRegs *regs);
 
-struct _HookInfo {
-    _HookInfo (MonoJitInfo *j, char *hook) {
-        jinfo = j;
-        specific_hook = hook;
-    }
-    MonoJitInfo *jinfo;
-    char *specific_hook;
-};
-typedef struct _HookInfo HookInfo;
+typedef void (*CommonHookFunc) (HookFuncs*, MonoMethod*, void*[], ArmRegs*);
+typedef void (*SpecHookFunc) (MonoMethod*, void**, ArmRegs*);
 
-struct _ArmRegs {
+struct ArmRegs {
     uint32_t r0;
     uint32_t r1;
     uint32_t r2;
@@ -83,8 +68,36 @@ struct _ArmRegs {
     uint32_t lr;
     uint32_t pc;
 };
-typedef struct _ArmRegs ArmRegs;
-typedef void (*CommonHookFunc)(MonoMethod*, void**, ArmRegs*);
+
+/*HookFuncs.mark 的掩码定义*/
+#define FUNC_TRACE_MARK 1u
+#define STACK_TRACE_MARK 2u
+#define LUA_HOOK_MARK 4u
+
+/*包含所有类型hook的结构体*/
+struct HookFuncs {
+    uint32_t mark;
+    SpecHookFunc func_trace;
+    SpecHookFunc stack_trace;
+    SpecHookFunc lua_hook;
+};
+
+/*通用hook的头部*/
+struct SpecificHook {
+    CommonHookFunc common_hook;     /*通用hook函数指针*/
+    HookFuncs *hooks;               /*hook函数列表*/
+    void *old_func;                 /*specific_hook 退出时将跳往的地址*/
+    void *method;                   /*MonoMethod*/
+};/*specific_hook 的shellcode将不会出现在这个结构体中*/
+
+struct HookInfo {
+    HookInfo (MonoJitInfo *j, SpecificHook *hook) {
+        jinfo = j;
+        specific_hook = hook;
+    }
+    MonoJitInfo *jinfo;
+    SpecificHook *specific_hook;
+};
 
 /*全局变量*/
 static pthread_mutex_t hooked_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -97,8 +110,42 @@ static pthread_mutex_t lua_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::map<MonoMethod*, char const*> lua_hook_dict;
 static bool trace_switch = false;
 
+/*Fixme : 每次更新这段跳板代码都是蛋疼, 有没有方便高效稳定的方法?*/
+unsigned char shellcodes[92] = {
+    0x0F, 0x00, 0x2D, 0xE9, 0xFF, 0xFF, 0x2D, 0xE9, 0x50, 0x00, 0x4D, 0xE2, 0x34, 0x00, 0x8D, 0xE5, 
+    0x3C, 0xE0, 0x8D, 0xE5, 0x40, 0x20, 0x8D, 0xE2, 0x34, 0x40, 0xA0, 0xE3, 0x04, 0x40, 0x4F, 0xE0, 
+    0x04, 0x00, 0x94, 0xE5, 0x0C, 0x10, 0x94, 0xE5, 0x0D, 0x30, 0xA0, 0xE1, 0x0F, 0xE0, 0xA0, 0xE1, 
+    0x00, 0xF0, 0x94, 0xE5, 0xFF, 0x1F, 0xBD, 0xE8, 0x04, 0xE0, 0x9D, 0xE5, 0x0C, 0xD0, 0x8D, 0xE2, 
+    0x0F, 0x00, 0xBD, 0xE8, 0x01, 0x80, 0x2D, 0xE9, 0x64, 0x00, 0xA0, 0xE3, 0x00, 0x00, 0x4F, 0xE0, 
+    0x08, 0x00, 0x90, 0xE5, 0x04, 0x00, 0x8D, 0xE5, 0x01, 0x80, 0xBD, 0xE8, 
+} ;
+/*
+ * stmfd sp!, {r0-r3} 
+ * stmfd sp!, {r0-r12, sp, lr, pc}
+ * sub r0, sp, #80      //函数调用前的sp                 |
+ * str r0, [sp, #52]    //设置保存的reg.sp为原来的sp     |-> 都是为了堆栈回溯做准备
+ * str lr, [sp, #60]    //设置保存的reg.pc为lr           |
+ * add r2, sp, #64      //3.参数数组
+ * ldr r4, =52
+ * sub r4, pc, r4
+ * ldr r0, [r4, #4]     //1.hooks
+ * ldr r1, [r4, #0x0C]  //2.method ptr
+ * mov r3, sp           //4.保存的reg环境块, 用于堆栈回溯
+ * mov lr, pc
+ * ldr pc, [r4]
+ * ldmfd sp!, {r0-r12}
+ * ldr lr, [sp, #4]     //恢复lr, 但不恢复sp, pc
+ * add sp, sp, #12      //清除掉栈中的 {sp, lr, pc} 以及 {r0-r3}
+ * ldmfd sp!, {r0-r3}   //加载可能被修改的参数
+ * stmfd sp!, {r0, pc}
+ * ldr r0, =100
+ * sub r0, pc, r0
+ * ldr r0, [r0, #8]
+ * str r0, [sp, #4]     //设置old_func域中的指针为继续执行的PC
+ * ldmfd sp!, {r0, pc}
+ */
 
-#define SP_BLOCK_SIZE 108
+#define SP_BLOCK_SIZE (sizeof(SpecificHook) + sizeof(shellcodes) + sizeof (HookFuncs))
 static std::deque<char*> mem_cache;
 static pthread_mutex_t alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
 static char *alloc_specific_trampo () {
@@ -118,55 +165,28 @@ static char *alloc_specific_trampo () {
     return r;
 }
 
-static char *specific_hook (void *org, void *method_obj, void *func) {
+static char *specific_hook (void *org, void *method_obj, SpecHookFunc init_func) {
     /*  ______________
-     * |__common_func_ 0
-     * |___old_func___ 4
-     * |__monomethod__ 8
-     * |_____code[]___ 12
+     * |__common_hook_ 0
+     * |___pHooFuncs__ 4
+     * |___old_func___ 8
+     * |_pMonoMethod__ 12
+     * |_____code[]___ 16
      */
     char *p = alloc_specific_trampo ();
-    /*Fixme : 每次更新这段跳板代码都是蛋疼, 有没有方便高效稳定的方法?*/
-    unsigned char code[88] = {
-        0x0F, 0x00, 0x2D, 0xE9, 0xFF, 0xFF, 0x2D, 0xE9, 0x50, 0x00, 0x4D, 0xE2, 0x34, 0x00, 0x8D, 0xE5, 
-        0x3C, 0xE0, 0x8D, 0xE5, 0x40, 0x10, 0x8D, 0xE2, 0x30, 0x40, 0xA0, 0xE3, 0x04, 0x40, 0x4F, 0xE0, 
-        0x08, 0x00, 0x94, 0xE5, 0x0D, 0x20, 0xA0, 0xE1, 0x0F, 0xE0, 0xA0, 0xE1, 0x00, 0xF0, 0x94, 0xE5, 
-        0xFF, 0x1F, 0xBD, 0xE8, 0x04, 0xE0, 0x9D, 0xE5, 0x0C, 0xD0, 0x8D, 0xE2, 0x0F, 0x00, 0xBD, 0xE8, 
-        0x01, 0x80, 0x2D, 0xE9, 0x5C, 0x00, 0xA0, 0xE3, 0x00, 0x00, 0x4F, 0xE0, 0x04, 0x00, 0x90, 0xE5, 
-        0x04, 0x00, 0x8D, 0xE5, 0x01, 0x80, 0xBD, 0xE8
-    };
-    /*
-     * stmfd sp!, {r0-r3} 
-     * stmfd sp!, {r0-r12, sp, lr, pc}
-     * sub r0, sp, #80      //函数调用前的sp                 |
-     * str r0, [sp, #52]    //设置保存的reg.sp为原来的sp     |-> 都是为了堆栈回溯做准备
-     * str lr, [sp, #60]    //设置保存的reg.pc为lr           |
-     * add r1, sp, #64      //2.参数数组
-     * ldr r4, =48
-     * sub r4, pc, r4
-     * ldr r0, [r4, #8]     //1.method ptr
-     * mov r2, sp           //3.保存的reg环境块, 用于堆栈回溯
-     * mov lr, pc
-     * ldr pc, [r4]
-     * ldmfd sp!, {r0-r12}
-     * ldr lr, [sp, #4]     //恢复lr, 但不恢复sp, pc
-     * add sp, sp, #12      //清除掉栈中的 {sp, lr, pc} 以及 {r0-r3}
-     * ldmfd sp!, {r0-r3}   //加载可能被修改的参数
-     * stmfd sp!, {r0, pc}
-     * ldr r0, =92
-     * sub r0, pc, r0
-     * ldr r0, [r0, #4]
-     * str r0, [sp, #4]     //设置old_func域中的指针为继续执行的PC
-     * ldmfd sp!, {r0, pc}
-     */
-    memcpy (p + 12, code, sizeof (code));
-    memcpy (p, &func, 4);
-    memcpy (p + 8, &method_obj, 4);
+    SpecificHook *shook = (SpecificHook*)p;
+    shook->common_hook = common_hook;
+    shook->hooks = (HookFuncs*)(p + sizeof (SpecificHook) + sizeof (shellcodes));
+    memset (shook->hooks, 0, sizeof (HookFuncs));
+    shook->hooks->mark = FUNC_TRACE_MARK;
+    shook->hooks->func_trace = init_func;
+    shook->method = method_obj;
+    
+    memcpy (p + sizeof (SpecificHook), shellcodes, sizeof (shellcodes));
 
-    if (arm_hook (org, p + 12, (void**)(p + 4)) == 0) {
+    if (arm_hook (org, p + sizeof (SpecificHook), (void**)(&shook->old_func)) == 0)
         return 0;
-    }
-    cache_flush ((uint32_t)p, (uint32_t)(p + SP_BLOCK_SIZE));
+    cache_flush ((uint32_t)p, (uint32_t)(p + sizeof (SpecificHook) + sizeof (shellcodes)));
     return p;
 }
 
@@ -206,34 +226,37 @@ static void send_trace_log (std::map<MonoMethod*, CallInfo> const &dict) {
     return;
 }
 
+/*记录函数被调用的次数*/
 pthread_mutex_t trace_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void func_trace (MonoMethod *method, void *args[], ArmRegs *regs) {
+    static std::map<MonoMethod*, CallInfo> trace_log;
+    static uint32_t order = 0;          /*函数在该次记录过程中的调用顺序数*/
     pthread_mutex_lock (&trace_list_mutex);
-    static std::map<MonoMethod*, CallInfo>trace_log;
-    static uint32_t order = 0;
-    if (trace_switch == false) {
-        order = 0;
-        if (!trace_log.empty ()) {
-            send_trace_log (trace_log);
-            trace_log.clear ();
+    do {
+        if (trace_switch == false) {
+            order = 0;
+            if (!trace_log.empty ()) {
+                send_trace_log (trace_log);
+                trace_log.clear ();
+            }
+            break;
         }
-        pthread_mutex_unlock (&trace_list_mutex);
-        return; /*Fixme : 这个地方再考虑, 重复代码*/
-    }
-    if (trace_log.find (method) != trace_log.end ()) {
+        /*记录过程中该函数第一次被调用时设置初始信息*/
+        if (trace_log.find (method) == trace_log.end ()) {
+            trace_log[method] = CallInfo ();
+            trace_log[method].order = order++;
+            trace_log[method].times = 1;
+        }
         trace_log[method].times += 1;
-    } else {
-        trace_log[method] = CallInfo ();
-        trace_log[method].order = order++;
-        trace_log[method].times = 1;
-    }
+    } while (0);
     pthread_mutex_unlock (&trace_list_mutex);
     return;
 }
 
+/*堆栈回溯的实现函数*/
 static int walk_stack (MonoDomain *domain, MonoContext *ctx, MonoJitInfo *jit_info, void *user_data) {
     MemWriter *writer = (MemWriter*)user_data;
-    MonoMethod *method =mono_jit_info_get_method (jit_info);
+    MonoMethod *method = mono_jit_info_get_method (jit_info);
     if (!method) {
         writer->sprintf("%s", "jit_info no method!");
         return 0;
@@ -251,9 +274,6 @@ static int walk_stack (MonoDomain *domain, MonoContext *ctx, MonoJitInfo *jit_in
 }
 
 void stack_trace (MonoMethod *method, void *args[], ArmRegs *regs) {
-    LOGD ("stack_trace be call!");
-    /*默认先call func_trace, 实现基本的函数跟踪不被遗漏*/
-    func_trace (method, args, regs);
     MonoContext ctx;
     ctx.eip = regs->pc;
     ctx.esp = regs->sp;
@@ -293,9 +313,8 @@ static void make_key() {
 }
 
 static void lua_hook (MonoMethod *method, void *args[], ArmRegs *regs) {
-    /*默认先call func_trace, 实现基本的函数跟踪不被遗漏*/
-    func_trace (method, args, regs);
     lua_State *L = 0;
+    /*每个线程一个lua_State*/
     pthread_once (&t_lua_once, make_key);
     if ((L = (lua_State*)pthread_getspecific (t_lua_key)) == 0) {
         L = lua_env_new ();
@@ -310,17 +329,27 @@ static void lua_hook (MonoMethod *method, void *args[], ArmRegs *regs) {
             return;
         }
     }
+    /*锁内拷贝是为了防止在取出代码后但执行前, 代码被其他线程释放掉*/
     pthread_mutex_lock (&lua_hook_mutex);
-    char const *lua_codes = 0;
-    if (lua_hook_dict.find (method) != lua_hook_dict.end ())
-        lua_codes = lua_hook_dict[method];
+    char *lua_codes = 0;
+    if (lua_hook_dict.find (method) != lua_hook_dict.end ()) {
+        char const *p = lua_hook_dict[method];
+        lua_codes = new char[strlen (p)];
+        strcpy (lua_codes, p);
+    }
     pthread_mutex_unlock (&lua_hook_mutex);
+
+    /*如果出现无lua_code的情况, 不通知客户端, 直接返回*/
+    if (!lua_codes)
+        return;
 
     lua_pushlightuserdata (L, method);
     lua_setglobal (L, "method");
     lua_pushlightuserdata (L, (void*)args);
     lua_setglobal (L, "args");
-    if (lua_codes && !luaL_dostring (L, lua_codes)) {
+    int exec_ok = !luaL_dostring (L, lua_codes);
+    delete[] lua_codes;
+    if (exec_ok) {
         lua_settop(L, 0);
         return;
     }
@@ -335,10 +364,18 @@ static void lua_hook (MonoMethod *method, void *args[], ArmRegs *regs) {
     return;
 }
 
-/*Fixme : 应该建立一个统一的hook函数, 其他hook函数直接注册到该函数, 这样可以形成一个hook链条*/
+static void common_hook (HookFuncs *hooks, MonoMethod *method, void *args[], ArmRegs *regs) {
+    if (hooks->mark & FUNC_TRACE_MARK)
+        hooks->func_trace (method, args, regs);
+    if (hooks->mark & LUA_HOOK_MARK)
+        hooks->lua_hook (method, args, regs);
+    if (hooks->mark & STACK_TRACE_MARK)
+        hooks->stack_trace (method, args, regs);
+}
 
 /*监控需要hook的函数*/
 static void profile_jit_result (MonoProfiler *prof, MonoMethod *method, MonoJitInfo* jinfo, int result) {
+    (void) prof;
     if (result == MONO_PROFILE_FAILED) return;
     if (mono_method_get_token (method) == 0) return;                /*一般是动态生成的marshall*/
     uint32_t iflags;
@@ -352,28 +389,9 @@ static void profile_jit_result (MonoProfiler *prof, MonoMethod *method, MonoJitI
         return;
     }
 
-        /*测试jit函数是否是mov r12, sp*/
+    /*测试jit函数是否是mov r12, sp*/
     if (*(uint32_t*)p != 0xE1A0C00D)
          LOGD ("exception func : %s , %p", mono_method_get_name (method), p);
-
-    bool all_pass = false;
-    pthread_mutex_lock (&addon_hook_mutex);
-    if (addon_hook_dict.find (method) != addon_hook_dict.end ())
-        all_pass = true;
-    pthread_mutex_unlock (&addon_hook_mutex);
-
-    /*TODO : 增加可配置的image和函数列表*/
-    /*Fixme : 这里应该记录所有函数, hook配置表允许的函数*/
-    if (!all_pass) {
-        if (strcmp (get_method_image_name (method), "Assembly-CSharp") != 0) return;
-        if (strcmp (mono_method_get_name (method), ".ctor") == 0) return;
-        if (strcmp (mono_method_get_name (method), ".cctor") == 0) return;
-        if (strcmp (mono_method_get_name (method), "set") == 0) return;
-        if (strcmp (mono_method_get_name (method), "get") == 0) return;
-        if (strcmp (mono_method_get_name (method), "Update") == 0) return;
-        if (strcmp (mono_method_get_name (method), "LateUpdate") == 0) return;
-        if (strcmp (mono_method_get_name (method), "OnGUI") == 0) return;
-    }
 
     bool donthook = false;
     pthread_mutex_lock (&replace_mutex);
@@ -382,27 +400,36 @@ static void profile_jit_result (MonoProfiler *prof, MonoMethod *method, MonoJitI
     pthread_mutex_unlock (&replace_mutex);
     if (donthook) return;
 
-    char *hook = specific_hook (p, method, (void*)func_trace);
-    if (hook == 0) {
-        /*将失败的hook也放到一个表里面*/
+    SpecificHook *shook = (SpecificHook*)specific_hook (p, method, func_trace);
+    if (shook == 0) {
         LOGD ("hook err : %s", mono_method_get_name (method));
         return;
     }
+    /*TODO : 增加可配置的image和函数列表*/
+    if (strcmp (get_method_image_name (method), "Assembly-CSharp") != 0 ||
+        strcmp (mono_method_get_name (method), ".ctor") == 0 ||
+        strcmp (mono_method_get_name (method), ".cctor") == 0 ||
+        strcmp (mono_method_get_name (method), "set") == 0 ||
+        strcmp (mono_method_get_name (method), "get") == 0 ||
+        strcmp (mono_method_get_name (method), "Update") == 0 ||
+        strcmp (mono_method_get_name (method), "LateUpdate") == 0 ||
+        strcmp (mono_method_get_name (method), "OnGUI") == 0) {
+        shook->hooks->mark &= (~FUNC_TRACE_MARK);
+    }
     pthread_mutex_lock (&hooked_mutex);
-    hooked_method_dict[method] = new HookInfo(jinfo, hook);
+    hooked_method_dict[method] = new HookInfo(jinfo, (SpecificHook*)shook);
     pthread_mutex_unlock (&hooked_mutex);
-    LOGD ("hook func : %s , %p", mono_method_get_name (method), p);
     return;
 }
 
 /*mono正常退出时 该函数被调用*/
 static void mono_shutdown (MonoProfiler *prof) {
+    (void) prof;
     LOGD ("mono over.");
 }
 
 static void install_jit_profile () {
-    MonoProfiler *prof = new MonoProfiler;
-    mono_profiler_install (prof, mono_shutdown);
+    mono_profiler_install (0, mono_shutdown);
     mono_profiler_install_jit_end (profile_jit_result);
     mono_profiler_set_events (MONO_PROFILE_JIT_COMPILATION);
 }
@@ -434,9 +461,6 @@ static bool hook_if_method_not_hook (MonoMethod *method) {
     if (is_hooked)
         return true;
 
-    pthread_mutex_lock (&addon_hook_mutex);
-    addon_hook_dict[method] = true;
-    pthread_mutex_unlock (&addon_hook_mutex);
     /*Fixme : 这里直接使用了0 号domain, 一般unity游戏中只有这一个, 但不能保证特殊情况*/
     MonoThread *thred = mono_thread_attach (mono_domain_get_by_id (0));
     mono_compile_method (method);
@@ -463,7 +487,7 @@ static void unset_stack_trace (Package *pkg) {
     if (hooked_method_dict.find (method) != hooked_method_dict.end ()) {
         HookInfo *info = hooked_method_dict[method];
         SpecificHook *shook = (SpecificHook*)info->specific_hook;
-        shook->trace_func = (void*)func_trace;
+        shook->hooks->mark &= (~STACK_TRACE_MARK);
     }
     pthread_mutex_unlock (&hooked_mutex);
 }
@@ -492,7 +516,8 @@ static void set_stack_trace (Package *pkg) {
         pthread_mutex_lock (&hooked_mutex);
         HookInfo *info = hooked_method_dict[method];
         SpecificHook *shook = (SpecificHook*)info->specific_hook;
-        shook->trace_func = (void*)stack_trace;
+        shook->hooks->stack_trace = stack_trace;
+        shook->hooks->mark |= STACK_TRACE_MARK;
         pthread_mutex_unlock (&hooked_mutex);
         rsp.set_err (true);
     }while (0);
@@ -564,9 +589,10 @@ static void replace_method (Package *pkg) {
     replace_method_dict[new_method] = true;
     pthread_mutex_unlock (&replace_mutex);
 
+    /*不用判断失败是因为失败会直接导致异常*/
     p = mono_compile_method (new_method);
     pthread_mutex_lock (&hooked_mutex);
-    memcpy (hooked_method_dict[method]->specific_hook + 4, &p, 4);
+    memcpy (&hooked_method_dict[method]->specific_hook->old_func, &p, 4);
     old_p = mono_jit_info_get_code_start (hooked_method_dict[method]->jinfo);
     pthread_mutex_unlock (&hooked_mutex);
 
@@ -692,18 +718,21 @@ static void hook_with_lua (Package *pkg) {
             break;
         }
 
-        char *p = 0;
-        if (!req.disable ())
-            p = new char[req.lua_code ().size () + 1];
+        if (req.disable ()) {
+            pthread_mutex_lock (&hooked_mutex);
+            SpecificHook *shook = hooked_method_dict[method]->specific_hook;
+            shook->hooks->mark &= (~LUA_HOOK_MARK);
+            pthread_mutex_unlock (&hooked_mutex);
+            break;
+        }
+
+        char *p = new char[req.lua_code ().size () + 1];
         memcpy (p, req.lua_code ().c_str (), req.lua_code ().size () + 1);
 
-        CommonHookFunc func = 0;
-        if (req.disable ())
-            func = func_trace;
-        else
-            func = lua_hook;
         pthread_mutex_lock (&hooked_mutex);
-        memcpy (hooked_method_dict[method]->specific_hook, &func, 4);
+        SpecificHook *shook = hooked_method_dict[method]->specific_hook;
+        shook->hooks->lua_hook = lua_hook;
+        shook->hooks->mark |= LUA_HOOK_MARK;
         pthread_mutex_unlock (&hooked_mutex);
 
         pthread_mutex_lock (&lua_hook_mutex);

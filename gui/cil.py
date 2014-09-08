@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# -*- coding: utf-8 -*-
 #file: cil.py
 #author: skeu
 #description: cil显示,编辑,编译模块
@@ -276,9 +275,10 @@ def cil_compile(s):
     line_infos = []
     cil_lines = s.split("\n")
     #读第一行, 分离出method_token和image
-    ma = re.search("\[(.*)\].*\[(.*)\]", cil_lines[0])
+    ma = re.search("\[(.+?)\].*\[([0-9A-Fa-f]{8})\]", cil_lines[0])
     if not ma:
         return False, "Err : 第一行缺少函数信息"
+    print ma.groups()
     image_name = ma.groups()[0]
     token = int(ma.groups()[1], 16)
     #第一遍parse

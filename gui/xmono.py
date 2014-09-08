@@ -371,7 +371,7 @@ class XMonoWindow(QtGui.QMainWindow):
         return g[0], g[1], g[2]
 
     def _traceMethod(self, s, sw):
-        name, sig, token = reMethodSig(s)
+        name, sig, token = self._reMethodSig(s)
         req = xmono_pb2.StackTraceReq()
         req.image_name = name
         req.method_token = int(token, 16)

@@ -12,6 +12,7 @@ description: mono API 到 lua包装的C++层函数实现
 #include <string.h>
 #include <stdint.h>
 #include "lua/lua.hpp"
+#include "mono/metadata/object.h"
 #include "mono/metadata/assembly.h"
 #include "mono/metadata/class.h"
 #include "mono/metadata/image.h"
@@ -302,11 +303,213 @@ static int l_call_method (lua_State *L) {
     return 2;
 }
 
+/*
+ * v = mono.get_field (obj, name)
+ * obj : MonoObject实例
+ * name : 需要获取的obj的域的名字
+ * 返回值 :
+ *  v : 该域的值
+ */
+static int l_get_field (lua_State *L) {
+    MonoObject *obj = (MonoObject*)lua_touserdata (L, 1);
+    if (!obj)
+        return luaL_error (L, "arg 1 needs a mono obj.");
+    /*最大的类型8字节*/
+    char _v[8];
+    void *v = _v;
+    memset (v, 0, 8);
+    MonoType *type;
+    if (!get_obj_field_value (obj, luaL_checkstring (L, 2), v, &type))
+        return luaL_error (L, "%s", helper_last_err ());
+    if (mono_type_is_reference (type)) {
+        lua_pushlightuserdata (L, *(void**)type);
+    } else {
+        switch (mono_type_get_type (type)) {
+            case MONO_TYPE_VOID:
+                lua_pushnil (L);
+                break;
+            case MONO_TYPE_BOOLEAN:
+                lua_pushboolean (L, *(bool*)v);
+                break;
+            case MONO_TYPE_U2:
+            case MONO_TYPE_CHAR:
+                /*char 用int来表示*/
+                lua_pushinteger (L, *(uint16_t*)v);
+                break;
+            case MONO_TYPE_I1:
+                lua_pushinteger(L, *(int8_t*)v);
+                break;
+            case MONO_TYPE_U1:
+                lua_pushinteger(L, *(uint8_t*)v);
+                break;
+            case MONO_TYPE_I2:
+                lua_pushinteger (L, *(int16_t*)v);
+                break;
+            case MONO_TYPE_I4:
+                lua_pushinteger(L, *(int32_t*)v);
+                break;
+            case MONO_TYPE_VALUETYPE:
+            case MONO_TYPE_U4:
+                lua_pushinteger(L, *(uint32_t*)v);
+                break;
+            case MONO_TYPE_I8:
+            case MONO_TYPE_U8: {
+                memcpy (lua_newuserdata (L, sizeof (int64_t)), v, sizeof (int64_t));
+                break;
+            }
+            case MONO_TYPE_R4:
+                lua_pushnumber(L, *(float*)v);
+                break;
+            case MONO_TYPE_R8:
+                lua_pushnumber(L, *(double*)v);
+                break;
+            case MONO_TYPE_I:
+            case MONO_TYPE_U:
+                lua_pushinteger (L, *(uint32_t*)v);
+                break;
+            case MONO_TYPE_MVAR:
+                luaL_error (L, "generic method dont be supported.");
+            case MONO_TYPE_PTR:
+                luaL_error (L, "dont support the ptr type.");
+            default:
+                luaL_error (L, "unknow method args type : 0x%02X", mono_type_get_type (type));
+        }
+    }
+    return 1;
+}
+
+/*
+ * mono.set_field (obj, name, value)
+ * obj : MonoObject实例
+ * name : 需要设置的obj的域的名字
+ * value : 需要设置的值
+ */
+static int l_set_field (lua_State *L) {
+    MonoObject *obj = (MonoObject*)lua_touserdata (L, 1);
+    if (!obj)
+        return luaL_error (L, "arg 1 needs a mono obj.");
+    char const *name = luaL_checkstring (L, 2);
+    MonoClass *clazz = mono_object_get_class (obj);
+    MonoClassField *field = mono_class_get_field_from_name (clazz, name);
+    MonoType *type = mono_field_get_type (field);
+    if (mono_type_is_reference (type) || mono_type_is_byref (type)) {
+        void *p = lua_touserdata (L, 3);
+        set_obj_field_value(obj, name, p);
+        return 0;
+    }
+    switch (mono_type_get_type (type)) {
+        case MONO_TYPE_BOOLEAN: {
+            int b = lua_toboolean (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_boolean_class (), &b);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_CHAR: {
+            /*char 用int来表示*/
+            int b = luaL_checkint (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_char_class (), &b);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_I1: {
+            int b = luaL_checkint (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_sbyte_class (), &b);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_U1: {
+            unsigned long l = luaL_checkunsigned (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_byte_class (), &l);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_I2: {
+            int b = luaL_checkint (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_int16_class (), &b);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_U2: {
+            unsigned long l = luaL_checkunsigned (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_uint16_class (), &l);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_I4: {
+            int b = luaL_checkint (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_int32_class (), &b);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_VALUETYPE:
+        case MONO_TYPE_U4: {
+            unsigned long l = luaL_checkunsigned (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_uint32_class (), &l);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_I8: {
+            void *u = lua_touserdata (L, 3);
+            if (!u)
+                luaL_error (L, "%s is Int64.", mono_field_get_name (field));
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_int64_class (), u);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_U8: {
+            void *u = lua_touserdata (L, 3);
+            if (!u)
+                luaL_error (L, "%s is UInt64.",mono_field_get_name (field));
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_uint64_class (), u);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_R4: {
+            /*这里的精度损失由使用lua的人负责*/
+            float f = (float)lua_tonumber (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_single_class (), &f);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_R8: {
+            double d = (double)lua_tonumber (L, 3);
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_double_class (), &d);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_I: {
+            void *u = lua_touserdata (L, 3);
+            if (!u)
+                luaL_error (L, "%s is IntPtr.", mono_field_get_name (field));
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_intptr_class (), u);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_U: {
+            void *u = lua_touserdata (L, 3);
+            if (!u)
+                luaL_error (L, "%s is UIntPtr.", mono_field_get_name (field));
+            MonoObject *v = mono_value_box (mono_domain_get (), mono_get_uintptr_class (), u);
+            set_obj_field_value(obj, name, mono_object_unbox (v));
+            break;
+        }
+        case MONO_TYPE_MVAR:
+            luaL_error (L, "generic method dont be supported.");
+        case MONO_TYPE_PTR:
+            luaL_error (L, "dont support the ptr type.");
+        default:
+            luaL_error (L, "unknow method args type : 0x%02X", mono_type_get_type (type));
+    }
+    return 0;
+}
+
 static const luaL_Reg R[] = {
     {"new", l_newobj},
     {"get_class", l_get_class},
     {"get_method", l_get_method},
     {"call_method", l_call_method},
+    {"get_field", l_get_field},
+    {"set_field", l_set_field},
     {0, 0}
 };
 

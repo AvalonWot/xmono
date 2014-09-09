@@ -142,7 +142,7 @@ MonoMethod *get_class_method (MonoClass *clz, char const *method_sig) {
     return method;
 }
 
-bool get_obj_field_value (MonoObject *obj, const char *key, void *value) {
+bool get_obj_field_value (MonoObject *obj, const char *key, void *value, MonoType **type) {
     MonoClass *clazz = mono_object_get_class (obj);
     if (!clazz) {
         set_helper_err ("can not get the obj's class");
@@ -153,8 +153,10 @@ bool get_obj_field_value (MonoObject *obj, const char *key, void *value) {
         set_helper_err ("can not get the %s.%s", mono_class_get_name (clazz), key);
         return false;
     }
-    void *re = 0;
     mono_field_get_value (obj, field, value);
+    if (type)
+        *type = mono_field_get_type (field);
+    return true;
 }
 
 void set_obj_field_value (MonoObject *obj, char const *val_name, void *value) {

@@ -37,7 +37,7 @@ MonoClass *get_class_with_name (char const *image_name, char const *name_space, 
 
 MonoMethod *get_class_method (MonoClass *clz, char const *method_sig);
 
-bool get_obj_field_value (MonoObject *obj, const char *key, void *value);
+bool get_obj_field_value (MonoObject *obj, const char *key, void *value, MonoType **type);
 
 void set_obj_field_value (MonoObject *obj, char const *val_name, void *value);
 

@@ -413,7 +413,17 @@ class XMonoWindow(QtGui.QMainWindow):
         self.luaHookWindow.show()
 
     def _showArgsModifyWin(self):
-        pass
+        s = self._getFuncCntItemStr()
+        if s == None:
+            return
+        name, sig, token = self._matchMethodSig(s)
+        #提取函数参数字符串
+        ma = re.search('\((.*)\)', sig)
+        if not ma:
+            return
+        sig = ma.groups()[0]
+        self.argsModifyWindow.setMethod(name, token, sig)
+        self.argsModifyWindow.show()
 
     def _recvDisasmMethod(self, packet):
         rsp = xmono_pb2.DisasmMethodRsp()

@@ -246,7 +246,7 @@ static void func_trace (MonoMethod *method, void *args[], ArmRegs *regs) {
         if (trace_log.find (method) == trace_log.end ()) {
             trace_log[method] = CallInfo ();
             trace_log[method].order = order++;
-            trace_log[method].times = 1;
+            trace_log[method].times = 0;
         }
         trace_log[method].times += 1;
     } while (0);

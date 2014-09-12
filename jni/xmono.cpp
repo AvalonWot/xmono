@@ -205,6 +205,7 @@ struct CallInfo{
 };
 
 static void send_trace_log (std::map<MonoMethod*, CallInfo> const &dict) {
+    LOGD ("send_trace_log be call.");
     MemWriter sbuf(0x100000);
     MemWriter writer(0x100000);
     std::map<MonoMethod*, CallInfo>::const_iterator p;
@@ -212,7 +213,7 @@ static void send_trace_log (std::map<MonoMethod*, CallInfo> const &dict) {
         MonoMethod *method = p->first;
         CallInfo call_info = p->second;
         char const *m = get_method_image_name (method);
-        char *n = mono_method_full_name (method, 0);
+        char *n = mono_method_full_name (method, 1);
         char str[256];
         sbuf.sprintf ("[%s] %s [%08X]|%d|%d\n", m, n, mono_method_get_token (method), call_info.times, call_info.order);
         g_free (n);

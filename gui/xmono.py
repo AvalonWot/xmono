@@ -422,7 +422,7 @@ class XMonoWindow(QtGui.QMainWindow):
         if not ma:
             return
         sig = ma.groups()[0]
-        self.argsModifyWindow.setMethod(name, token, sig)
+        self.argsModifyWindow.setMethodInfo(name, int(token, 16), sig)
         self.argsModifyWindow.show()
 
     def _recvDisasmMethod(self, packet):

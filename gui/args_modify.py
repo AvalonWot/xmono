@@ -14,7 +14,7 @@ class ArgsModifyWindow(QtGui.QMainWindow):
         self.ui.yesButton.clicked.connect(self._emitHook)
         self.ui.noButton.clicked.connect(self.close)
 
-    def setMethod(self, iname, token, params):
+    def setMethodInfo(self, iname, token, params):
         """iname : image_name(str), token : method_token(int)
             params : method signature(str)"""
         self.image_name = iname
@@ -94,25 +94,25 @@ class ArgsModifyWindow(QtGui.QMainWindow):
             if not p[1]:
                 continue
             #获取用户填值的item
-            item = self.ui.argsTableWidget.item(i,1)
+            item = self.ui.argsTableWidget.item(i, 1)
             if item.data(QtCore.Qt.EditRole).isNull():
                 continue
             if p[0] == 'single':
                 t = item.data(QtCore.Qt.EditRole).toFloat()
                 if t[1] == False:
-                    err = u'{0} arg 必须是float!'.format(i)
+                    err = u'错误 : arg {0} 必须是float!'.format(i + 1)
                     break
                 v = t[0]
             elif p[0] == 'double':
                 t = item.data(QtCore.Qt.EditRole).toDouble()
                 if t[1] == False:
-                    err = u'{0} arg 必须是Double!'.format(i)
+                    err = u'错误 : arg {0} 必须是Double!'.format(i + 1)
                     break
                 v = t[0]
             elif p[0] == 'byte':
                 t = item.data(QtCore.Qt.EditRole).toInt()
                 if t[1] == False:
-                    err = u'{0} arg 必须是Byte!'.format(i)
+                    err = u'错误 : arg {0} 必须是Byte!'.format(i + 1)
                     break
                 v = t[0] & 0xFF
             elif p[0] == 'bool':
@@ -121,12 +121,13 @@ class ArgsModifyWindow(QtGui.QMainWindow):
             else:
                 t = item.data(QtCore.Qt.EditRole).toInt()
                 if t[1] == False:
-                    err = u'{0} arg 必须是整数!'.format(i)
+                    err = u'错误 : arg {0} 必须是整数!'.format(i + 1)
                     break
                 v = t[0]
             lua_code = lua_code + "xmono.set_args({0},{1})\n".format(i+1, v)
         #如果什么都不需要修改, 直接返回
         if not lua_code:
+            self.close()
             return
         msg_box = QtGui.QMessageBox()
         if err:
